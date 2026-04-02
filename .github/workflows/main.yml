@@ -1,31 +1,24 @@
-  name: kiwoom-supporter
+name: kiwoom-supporter
 
-  "on":
-    schedule:
-      - cron: '30 23 * * 0-4'
-    workflow_dispatch:
+on:
+  schedule:
+    - cron: '30 23 * * 0-4'
+  workflow_dispatch:
 
-  jobs:
-    generate-posts:
-      runs-on: ubuntu-latest
-      steps:
-        - name: checkout
-          uses: actions/checkout@v4
-
-        - name: setup-python
-          uses: actions/setup-python@v5
-          with:
-            python-version: '3.11'
-
-        - name: install-packages
-          run: pip install pykrx pandas requests python-dotenv schedule
-
-        - name: run-script
-          env:
-            TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-            TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          run: python kiwoom_supporter.py --now
-          env:
-            TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-            TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          run: python kiwoom_supporter.py --now
+jobs:
+  generate-posts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: install-packages
+        run: pip install pykrx pandas requests python-dotenv schedule
+      - name: run-script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python kiwoom_supporter.py --now
