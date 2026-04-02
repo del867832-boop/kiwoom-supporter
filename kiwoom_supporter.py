@@ -1,244 +1,281 @@
 #!/usr/bin/env python3
 """
-키움증권 커뮤니티 서포터즈 2기 자동 게시글 생성기
-- 매일 거래대금 상위 10종목 조회 (pykrx)
-- 템플릿 기반 게시글 10개 생성
-- 텔레그램 봇으로 전송 + supporter_posts/ 폴더 저장
+키움증권 서포터즈 2기 - 장중 실시간 종목 정보 포스터
+KIS API 기반 실시간 데이터
 
-실행법:
-  python kiwoom_supporter.py --now    # 즉시 1회 실행
-  python kiwoom_supporter.py          # 매일 08:30 자동 실행 (로컬)
+스케줄:
+  09:05 KST - 시초가 분석  3종목
+  10:30 KST - 오전 흐름    4종목
+  14:00 KST - 오후 수급    3종목  (합계 10개)
+
+실행:
+  python kiwoom_supporter.py --now         # 현재 시간 기준 자동 배치
+  python kiwoom_supporter.py --morning     # 09:05 배치 강제 실행
+  python kiwoom_supporter.py --midday      # 10:30 배치 강제 실행
+  python kiwoom_supporter.py --afternoon   # 14:00 배치 강제 실행
 """
 
 import os
 import sys
 import time
-import random
 import requests
-import schedule
-import pandas as pd
 from datetime import datetime, timedelta
-from pykrx import stock as krx
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── 환경변수 ──────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
+KIS_APP_KEY        = os.getenv("KIS_APP_KEY")
+KIS_APP_SECRET     = os.getenv("KIS_APP_SECRET")
+KIS_BASE_URL       = "https://openapi.koreainvestment.com:9443"
 
-
-# ──────────────────────────────────────────
-# 템플릿
-# ──────────────────────────────────────────
-
-TEMPLATES = {
-    "분석/정보형": [
-        "{name} 오늘 거래대금 {vol}억 터졌네요. 전일 대비 수급이 눈에 띄게 몰리는 중인데, 단순 테마인지 실적 기반인지 체크해볼 필요 있을 것 같습니다. #{name}",
-        "오늘 {name}({ticker}) {sign}{change_rate}% 움직임. 거래대금 {vol}억으로 상위권 유지 중. 외국인/기관 수급 방향이 관건인 것 같습니다. 차트상 주요 지지선 지키는지 확인 중이에요. #{name}",
-        "{name} 거래대금 {vol}억, 등락률 {sign}{change_rate}%. 최근 며칠간 거래대금이 꾸준히 늘고 있는데 이런 경우 방향성 나오기 전에 변동성 커지는 경우 많더라고요. 현재가 {price:,}원 구간 지지 여부 체크 중입니다. #{name}",
-        "{name} 오늘 현재가 {price:,}원, {sign}{change_rate}% 마감. 거래대금 {vol}억이면 시장 관심도 꽤 높은 편. 단기 차트로 보면 거래량 실린 양봉/음봉 이후 방향이 나오는 패턴 많으니 내일 흐름도 같이 봐야 할 것 같아요. #{name}",
-        "오늘 {name} 거래대금 기준 상위 종목에 이름 올렸네요. {sign}{change_rate}% 움직임에 {vol}억 거래대금. 수급 측면에서 기관·외국인 어느 쪽이 주도하는지가 포인트인 것 같습니다. #{name}",
-    ],
-    "관심유도형": [
-        "{name} 지금 {price:,}원인데 여기서 추가 매수하는 게 맞는 건지 아직도 고민 중... 거래대금 {vol}억에 {sign}{change_rate}%면 이미 많이 올랐다고 봐야 할까요? 의견 궁금합니다. #{name}",
-        "솔직히 {name} 지금 {sign}{change_rate}% 움직임 보면서 들어가야 하나 말아야 하나 고민되시는 분들 많을 것 같은데, 지금 구간 어떻게 보세요? 추가 상승 여력 있다고 보시나요? #{name}",
-        "{name} 들고 계신 분들 지금 어떠세요? {sign}{change_rate}%에 거래대금 {vol}억이면 시장 관심은 확실한데 여기서 홀딩이 맞는지 익절이 맞는지 판단이 쉽지 않네요. #{name}",
-        "{name} 오늘 {sign}{change_rate}% 움직인 거 보고 뒤늦게 들어가려고 했는데 망설여지네요. 이런 거래대금 터진 날 따라 들어가는 게 맞는지 아니면 눌림목 기다려야 하는지... 어떻게 생각하세요? #{name}",
-        "{name} {price:,}원 지금 이 자리, 저점 매수 구간으로 보시는 분 있나요? 아니면 아직 더 빠질 수 있다고 보시는 건지. 거래대금 {vol}억이면 관심은 확실히 있는 것 같긴 한데요. #{name}",
-    ],
-    "TIP공유형": [
-        "{name} 관심 있다면 제가 체크하는 포인트 공유합니다. ① 거래대금 연속성 (오늘 {vol}억) ② 현재가 {price:,}원 기준 직전 고점/저점 위치 ③ 외국인·기관 수급 방향. 이 세 가지 동시에 맞아야 진입 고려하는 편입니다. #{name}",
-        "{name} 같은 거래대금 상위 종목 매매할 때 제가 쓰는 방법: 장 시작 첫 30분 거래량·방향 확인 후 진입 여부 결정. 오늘처럼 {sign}{change_rate}% 이미 움직인 날은 추격보다 다음날 눌림목 대기가 더 나은 경우 많았습니다. #{name}",
-        "{name} 보기 전에 체크해야 할 리스크 포인트 몇 가지. ① 거래대금 {vol}억이 일시적인지 연속성 있는지 ② 현재가 {price:,}원이 52주 고점 대비 어느 위치인지 ③ 관련 뉴스·공시 유무. 뉴스 없는 상승은 단기 변동성에 주의가 필요합니다. #{name}",
-        "거래대금 상위 종목 {name} 단타 치는 분들께 드리는 팁. {sign}{change_rate}% 움직인 날 다음날 패턴 보면: 갭상승 후 눌림, 갭하락 후 반등 두 가지 경우가 많아요. 진입 전 전일 종가 기준 갭 방향 먼저 확인하는 게 좋습니다. #{name}",
-        "{name} 매매 시 손절 기준 잡는 방법 공유. 현재가 {price:,}원 기준으로 직전 저점 or -3% 중 더 가까운 쪽을 손절선으로 잡는 편입니다. 거래대금 {vol}억 터진 날은 변동성도 같이 커지니 진입 사이즈 평소보다 줄이는 게 안전합니다. #{name}",
-    ],
+# ── 종목 배치 배분 ─────────────────────────────────────────────────
+# morning(3) + midday(4) + afternoon(3) = 10개
+BATCH_STOCKS = {
+    "morning":   ["005930", "000660", "005380"],
+    "midday":    ["000270", "035420", "373220", "207940"],
+    "afternoon": ["105560", "055550", "051910"],
 }
 
-POST_TYPES = ["분석/정보형", "관심유도형", "TIP공유형"]
-_used: dict = {t: [] for t in POST_TYPES}
+NAME_MAP = {
+    "005930": "삼성전자",
+    "000660": "SK하이닉스",
+    "005380": "현대차",
+    "000270": "기아",
+    "035420": "NAVER",
+    "373220": "LG에너지솔루션",
+    "207940": "삼성바이오로직스",
+    "105560": "KB금융",
+    "055550": "신한지주",
+    "051910": "LG화학",
+}
+
+SECTOR_MAP = {
+    "005930": "반도체",
+    "000660": "반도체",
+    "005380": "자동차",
+    "000270": "자동차",
+    "035420": "IT플랫폼",
+    "373220": "2차전지",
+    "207940": "바이오",
+    "105560": "금융",
+    "055550": "금융",
+    "051910": "화학",
+}
+
+BATCH_LABEL = {
+    "morning":   "시초가 분석",
+    "midday":    "오전 흐름",
+    "afternoon": "오후 수급",
+}
+
+# ── KIS API ────────────────────────────────────────────────────────
+
+_token_cache: dict = {"token": None, "expires": None}
 
 
-# ──────────────────────────────────────────
-# 1. 데이터 수집
-# ──────────────────────────────────────────
+def get_token() -> str:
+    now = datetime.now()
+    if _token_cache["token"] and _token_cache["expires"] and now < _token_cache["expires"]:
+        return _token_cache["token"]
 
-def get_recent_trading_day() -> str:
-    for i in range(7):
-        d = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
-        try:
-            df = krx.get_market_trading_value_by_ticker(d, market="KOSPI")
-            if not df.empty and df["거래대금"].sum() > 0:
-                return d
-        except Exception:
-            continue
-    return datetime.now().strftime("%Y%m%d")
+    url  = f"{KIS_BASE_URL}/oauth2/tokenP"
+    body = {
+        "grant_type": "client_credentials",
+        "appkey":     KIS_APP_KEY,
+        "appsecret":  KIS_APP_SECRET,
+    }
+    res  = requests.post(url, json=body, timeout=10)
+    data = res.json()
 
+    if "access_token" not in data:
+        raise Exception(f"KIS 토큰 발급 실패: {data.get('msg1', data)}")
 
-def get_top10_stocks(date_str: str) -> list:
-    frames = []
-    for market in ("KOSPI", "KOSDAQ"):
-        try:
-            df = krx.get_market_trading_value_by_ticker(date_str, market=market)
-            if not df.empty:
-                frames.append(df)
-        except Exception:
-            pass
-
-    if not frames:
-        return []
-
-    combined   = pd.concat(frames)
-    top10      = combined.nlargest(10, "거래대금").reset_index()
-    ticker_col = "티커" if "티커" in top10.columns else top10.columns[0]
-
-    results = []
-    for _, row in top10.iterrows():
-        ticker = str(row[ticker_col])
-        try:
-            name = krx.get_market_ticker_name(ticker)
-        except Exception:
-            name = ticker
-
-        try:
-            ohlcv       = krx.get_market_ohlcv_by_date(date_str, date_str, ticker)
-            price       = int(ohlcv["종가"].iloc[-1])               if not ohlcv.empty else 0
-            change_rate = round(float(ohlcv["등락률"].iloc[-1]), 2) if not ohlcv.empty else 0.0
-        except Exception:
-            price, change_rate = 0, 0.0
-
-        results.append({
-            "ticker":      ticker,
-            "name":        name,
-            "price":       price,
-            "change_rate": change_rate,
-            "volume_100m": int(row["거래대금"] / 1e8),
-        })
-    return results
+    _token_cache["token"]   = data["access_token"]
+    _token_cache["expires"] = now + timedelta(hours=23)
+    print("  KIS 토큰 발급 완료")
+    return _token_cache["token"]
 
 
-# ──────────────────────────────────────────
-# 2. 게시글 생성
-# ──────────────────────────────────────────
+def get_stock_info(ticker: str) -> dict:
+    """현재가 · 등락률 · 거래량 · 거래대금 · 52주 고저 조회"""
+    token = get_token()
+    url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
+    headers = {
+        "content-type": "application/json",
+        "authorization": f"Bearer {token}",
+        "appkey":        KIS_APP_KEY,
+        "appsecret":     KIS_APP_SECRET,
+        "tr_id":         "FHKST01010100",
+    }
+    params = {
+        "fid_cond_mrkt_div_code": "J",
+        "fid_input_iscd":         ticker,
+    }
+    res = requests.get(url, headers=headers, params=params, timeout=10)
+    out = res.json().get("output", {})
 
-def pick_template(post_type: str) -> str:
-    pool      = TEMPLATES[post_type]
-    used      = _used[post_type]
-    available = [i for i in range(len(pool)) if i not in used]
-    if not available:
-        _used[post_type] = []
-        available = list(range(len(pool)))
-    idx = random.choice(available)
-    _used[post_type].append(idx)
-    return pool[idx]
+    return {
+        "price":       int(out.get("stck_prpr",   0)),   # 현재가
+        "change":      int(out.get("prdy_vrss",   0)),   # 전일대비
+        "change_rate": float(out.get("prdy_ctrt", 0)),   # 등락률(%)
+        "volume":      int(out.get("acml_vol",    0)),   # 누적거래량
+        "tr_value":    int(out.get("acml_tr_pbmn",0)),   # 누적거래대금
+        "open":        int(out.get("stck_oprc",   0)),   # 시가
+        "high":        int(out.get("stck_hgpr",   0)),   # 고가
+        "low":         int(out.get("stck_lwpr",   0)),   # 저가
+        "w52_high":    int(out.get("w52_hgpr",    0)),   # 52주 최고
+        "w52_low":     int(out.get("w52_lwpr",    0)),   # 52주 최저
+    }
 
 
-def generate_post(stock: dict, post_type: str) -> str:
-    sign = "+" if stock["change_rate"] >= 0 else ""
-    return pick_template(post_type).format(
-        name=stock["name"],
-        ticker=stock["ticker"],
-        price=stock["price"],
-        change_rate=stock["change_rate"],
-        sign=sign,
-        vol=stock["volume_100m"],
-        abs_cr=abs(stock["change_rate"]),
+# ── 포맷 헬퍼 ─────────────────────────────────────────────────────
+
+def fmt_price(v: int)  -> str:
+    return f"{v:,}원"
+
+def fmt_value(v: int)  -> str:
+    if v >= 1_000_000_000_000: return f"{v/1_000_000_000_000:.1f}조"
+    if v >= 100_000_000:       return f"{v/100_000_000:.0f}억"
+    return f"{v:,}원"
+
+def fmt_vol(v: int) -> str:
+    if v >= 10_000: return f"{v/10_000:.1f}만주"
+    return f"{v:,}주"
+
+
+# ── 한줄 코멘트 ───────────────────────────────────────────────────
+
+def get_comment(info: dict, batch: str) -> str:
+    rate      = info["change_rate"]
+    price     = info["price"]
+    w52_high  = info["w52_high"]
+    w52_low   = info["w52_low"]
+    parts     = []
+
+    # 갭 분석 (시초가 배치만)
+    if batch == "morning" and info["open"] > 0 and info["change"] != 0:
+        prev_close = info["price"] - info["change"]
+        if prev_close > 0:
+            gap_pct = (info["open"] - prev_close) / prev_close * 100
+            if gap_pct >= 1:
+                parts.append(f"갭업 +{gap_pct:.1f}%")
+            elif gap_pct <= -1:
+                parts.append(f"갭다운 {gap_pct:.1f}%")
+
+    # 52주 위치
+    if w52_high > 0 and price >= w52_high * 0.98:
+        parts.append("52주 신고가 근접")
+    elif w52_low > 0 and price <= w52_low * 1.05:
+        parts.append("52주 저점 근접")
+
+    # 등락 방향
+    if   rate >= 3:  parts.append("강세 흐름")
+    elif rate >= 1:  parts.append("상승 흐름")
+    elif rate <= -3: parts.append("약세 흐름")
+    elif rate <= -1: parts.append("하락 흐름")
+    else:            parts.append("보합권")
+
+    return " · ".join(parts) if parts else "장중 모니터링 중"
+
+
+# ── 포스트 빌드 ───────────────────────────────────────────────────
+
+def build_post(ticker: str, info: dict, batch: str, now: datetime) -> str:
+    name      = NAME_MAP.get(ticker, ticker)
+    sector    = SECTOR_MAP.get(ticker, "")
+    arrow     = "▲" if info["change_rate"] > 0 else ("▼" if info["change_rate"] < 0 else "─")
+    sign      = "+" if info["change_rate"] > 0 else ""
+    icon      = "📈" if info["change_rate"] >= 0 else "📉"
+    comment   = get_comment(info, batch)
+    sector_tag = f"#{sector} " if sector else ""
+    time_str  = now.strftime("%H:%M")
+
+    return (
+        f"{icon} {name}  {time_str} 현재\n"
+        f"\n"
+        f"현재가    {fmt_price(info['price'])}  {arrow} {sign}{info['change_rate']:.2f}%\n"
+        f"거래대금  {fmt_value(info['tr_value'])}\n"
+        f"거래량    {fmt_vol(info['volume'])}\n"
+        f"\n"
+        f"{comment}\n"
+        f"\n"
+        f"#{name} {sector_tag}#키움 #장중정보"
     )
 
 
-# ──────────────────────────────────────────
-# 3. 텔레그램 전송
-# ──────────────────────────────────────────
+# ── 텔레그램 ──────────────────────────────────────────────────────
 
 def tg_send(text: str):
-    """텔레그램 봇으로 메시지 전송"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(text)
+        print()
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
     except Exception as e:
-        print(f"  텔레그램 전송 오류: {e}")
+        print(f"  텔레그램 오류: {e}")
 
 
-def send_posts_to_telegram(posts: list, date_str: str):
-    """게시글 전체를 텔레그램으로 전송"""
-    # 헤더
-    tg_send(f"📊 키움 서포터즈 게시글 | {date_str}\n오늘 거래대금 상위 10종목 게시글 {len(posts)}개")
-    time.sleep(0.5)
+# ── 배치 실행 ─────────────────────────────────────────────────────
 
-    for p in posts:
-        msg = f"[{p['num']:02d}/{len(posts)}] {p['stock']} · {p['type']}\n\n{p['body']}"
-        tg_send(msg)
-        time.sleep(0.3)   # 텔레그램 rate limit 방지
+def run_batch(batch: str):
+    now     = datetime.now()
+    label   = BATCH_LABEL.get(batch, batch)
+    tickers = BATCH_STOCKS.get(batch, [])
 
-    tg_send("✅ 전송 완료! 위 게시글 복붙해서 키움 커뮤니티에 올려주세요 🚀")
+    print(f"\n{'='*50}")
+    print(f"  키움 서포터즈  {now.strftime('%Y-%m-%d %H:%M')}  {label}")
+    print(f"{'='*50}")
 
+    tg_send(f"📊 키움 서포터즈  {now.strftime('%m/%d %H:%M')}  {label}")
+    time.sleep(0.3)
 
-# ──────────────────────────────────────────
-# 4. 메인 실행
-# ──────────────────────────────────────────
-
-def daily_generate():
-    now = datetime.now()
-    print(f"\n{'='*60}")
-    print(f"  키움 서포터즈 게시글 생성  {now.strftime('%Y-%m-%d %H:%M')}")
-    print(f"{'='*60}")
-
-    date_str = get_recent_trading_day()
-    print(f"📊 기준일: {date_str}  |  거래대금 상위 10종목 조회 중...")
-
-    stocks = get_top10_stocks(date_str)
-    if not stocks:
-        print("❌ 종목 데이터 조회 실패")
-        tg_send("❌ 키움 서포터즈: 오늘 종목 데이터 조회 실패")
-        return
-
-    print(f"✅ {len(stocks)}종목 조회 완료\n")
-
-    for k in _used:
-        _used[k] = []
-
-    posts = []
-    for i, s in enumerate(stocks):
-        post_type = POST_TYPES[i % 3]
+    for ticker in tickers:
+        name = NAME_MAP.get(ticker, ticker)
         try:
-            body = generate_post(s, post_type)
-            posts.append({"num": i+1, "stock": s["name"], "type": post_type, "body": body})
-            print(f"  [{i+1:02d}/10] {s['name']:<12} ✅")
+            info = get_stock_info(ticker)
+            post = build_post(ticker, info, batch, now)
+            print(f"  ✅ {name}  {info['price']:,}원  {info['change_rate']:+.2f}%")
         except Exception as e:
-            print(f"  [{i+1:02d}/10] {s['name']:<12} ❌  {e}")
+            print(f"  ⚠️  {name} 오류: {e}")
+            post = (
+                f"📊 {name}  {now.strftime('%H:%M')} 현재\n\n"
+                f"데이터 조회 중 오류가 발생했습니다.\n\n"
+                f"#{name} #장중정보"
+            )
+        tg_send(post)
+        time.sleep(0.5)
 
-    # 파일 저장
-    save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "supporter_posts")
-    os.makedirs(save_dir, exist_ok=True)
-    fname = os.path.join(save_dir, f"posts_{now.strftime('%Y%m%d_%H%M')}.txt")
-    with open(fname, "w", encoding="utf-8") as f:
-        f.write(f"키움 서포터즈 게시글  |  {now.strftime('%Y년 %m월 %d일')}\n")
-        f.write(f"기준일: {date_str}\n{'='*60}\n\n")
-        for p in posts:
-            f.write(f"[{p['num']:02d}] {p['stock']}  |  {p['type']}\n{'-'*40}\n{p['body']}\n\n")
+    print(f"  완료 ({len(tickers)}개 전송)")
 
-    print(f"\n✅ {len(posts)}개 생성 완료  →  {fname}")
 
-    # 텔레그램 전송
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        print("📱 텔레그램 전송 중...")
-        send_posts_to_telegram(posts, date_str)
-        print("✅ 텔레그램 전송 완료")
-    else:
-        print("⚠️  텔레그램 미설정 - 파일만 저장됨")
+def detect_batch() -> str:
+    """현재 시각 기준 배치 자동 감지"""
+    t = datetime.now().hour * 60 + datetime.now().minute
+    if   t < 10 * 60: return "morning"
+    elif t < 13 * 60: return "midday"
+    else:             return "afternoon"
 
-    return posts
 
+# ── 진입점 ────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if "--now" in sys.argv or "-n" in sys.argv:
-        daily_generate()
+    if   "--morning"   in sys.argv: run_batch("morning")
+    elif "--midday"    in sys.argv: run_batch("midday")
+    elif "--afternoon" in sys.argv: run_batch("afternoon")
+    elif "--now" in sys.argv or "-n" in sys.argv:
+        run_batch(detect_batch())
     else:
-        print("🚀 키움 서포터즈 자동 생성기  |  매일 08:30 실행")
-        print("   즉시 실행: python kiwoom_supporter.py --now\n")
-        schedule.every().day.at("08:30").do(daily_generate)
+        import schedule as sch
+        print("🚀 키움 서포터즈  |  장중 자동 포스팅")
+        print("   09:05 시초가 → 10:30 오전 → 14:00 오후\n")
+        sch.every().day.at("09:05").do(run_batch, "morning")
+        sch.every().day.at("10:30").do(run_batch, "midday")
+        sch.every().day.at("14:00").do(run_batch, "afternoon")
         while True:
-            schedule.run_pending()
+            sch.run_pending()
             time.sleep(30)
