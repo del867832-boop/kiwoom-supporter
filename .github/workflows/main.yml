@@ -2,7 +2,9 @@ name: kiwoom-supporter
 
 on:
   schedule:
-    - cron: '30 23 * * 0-4'
+    - cron: '5 0 * * 1-5'
+    - cron: '30 1 * * 1-5'
+    - cron: '0 5 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -16,9 +18,11 @@ jobs:
         with:
           python-version: '3.11'
       - name: install-packages
-        run: pip install pykrx pandas requests python-dotenv schedule
+        run: pip install requests python-dotenv schedule
       - name: run-script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
         run: python kiwoom_supporter.py --now
