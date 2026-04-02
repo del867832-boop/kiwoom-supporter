@@ -1,6 +1,6 @@
- name: kiwoom-supporter
+  name: kiwoom-supporter
 
-  on:
+  "on":
     schedule:
       - cron: '30 23 * * 0-4'
     workflow_dispatch:
@@ -21,6 +21,10 @@
           run: pip install pykrx pandas requests python-dotenv schedule
 
         - name: run-script
+          env:
+            TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+            TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          run: python kiwoom_supporter.py --now
           env:
             TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
             TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
