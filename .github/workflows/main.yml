@@ -1,4 +1,4 @@
-  name: kiwoom-supporter
+ name: kiwoom-supporter
 
   on:
     schedule:
@@ -9,15 +9,18 @@
     generate-posts:
       runs-on: ubuntu-latest
       steps:
-        - uses: actions/checkout@v4
-        - uses: actions/setup-python@v5
+        - name: checkout
+          uses: actions/checkout@v4
+
+        - name: setup-python
+          uses: actions/setup-python@v5
           with:
             python-version: '3.11'
-        - run: pip install pykrx pandas requests python-dotenv schedule
-        - run: python kiwoom_supporter.py --now
-          env:
-            TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-            TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+        - name: install-packages
+          run: pip install pykrx pandas requests python-dotenv schedule
+
+        - name: run-script
           env:
             TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
             TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
