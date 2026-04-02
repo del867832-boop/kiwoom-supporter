@@ -1,0 +1,29 @@
+name: 키움 서포터즈 게시글 자동 생성
+
+on:
+  schedule:
+    # 매일 평일 08:30 KST = 23:30 UTC (전날)
+    - cron: '30 23 * * 0-4'
+  workflow_dispatch:   # 깃허브에서 수동 실행 버튼
+
+jobs:
+  generate-posts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: pip install pykrx pandas requests python-dotenv schedule
+
+      - name: 게시글 생성 및 텔레그램 전송
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python kiwoom_supporter.py --now
