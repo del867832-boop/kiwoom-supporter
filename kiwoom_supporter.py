@@ -334,7 +334,7 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macr
     orgn_str = f"{'▲' if orgn>=0 else '▼'} {fmt_vol(abs(orgn))}" if orgn != 0 else "─"
 
     return (
-        f"{icon} {name}  거래대금 {rank}위  {time_str}\n"
+        f"{icon} {name}  {time_str} 현재\n"
         f"\n"
         f"현재가    {fmt_price(info['price'])}  {arrow} {sign}{info['change_rate']:.2f}%\n"
         f"거래대금  {fmt_value(info['tr_value'])}\n"
@@ -415,13 +415,13 @@ def run_batch(batch: str):
             inv = get_investor_data(stock["ticker"])
             time.sleep(0.2)
 
-            title = f"[{rank}위] {name} 거래대금 {rank}위  {now.strftime('%H:%M')} 장중"
+            title = f"{name} {now.strftime('%m/%d')} 장중 실시간"
             body  = build_post(stock, inv, batch, rank, now, macro)
 
             # 제목 / 본문 따로 전송
-            tg_send(f"📌 제목\n{title}")
+            tg_send(title)
             time.sleep(0.2)
-            tg_send(f"📝 본문\n{body}")
+            tg_send(body)
             print(f"  ✅ [{rank}위] {name}  {stock['price']:,}원  {stock['change_rate']:+.2f}%")
         except Exception as e:
             print(f"  ⚠️  {name} 오류: {e}")
