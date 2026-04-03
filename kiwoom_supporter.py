@@ -19,10 +19,12 @@ import os
 import sys
 import time
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
+
+KST = timezone(timedelta(hours=9))
 
 # ── 환경변수 ──────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -32,7 +34,6 @@ KIS_APP_SECRET     = os.getenv("KIS_APP_SECRET")
 KIS_BASE_URL       = "https://openapi.koreainvestment.com:9443"
 
 # ── 종목 배치 배분 ─────────────────────────────────────────────────
-# morning(3) + midday(4) + afternoon(3) = 10개
 BATCH_STOCKS = {
     "morning":   ["005930", "000660", "005380"],
     "midday":    ["000270", "035420", "373220", "207940"],
@@ -77,7 +78,7 @@ _token_cache: dict = {"token": None, "expires": None}
 
 
 def get_token() -> str:
-    now = datetime.now()
+    now = datetime.now(KST)
     if _token_cache["token"] and _token_cache["expires"] and now < _token_cache["expires"]:
         return _token_cache["token"]
 
@@ -94,7 +95,7 @@ def get_token() -> str:
         raise Exception(f"KIS 토큰 발급 실패: {data.get('msg1', data)}")
 
     _token_cache["token"]   = data["access_token"]
-    _token_cache["expires"] = now + timedelta(hours=23)
+    _token_cache["expires"] = datetime.now(KST) + timedelta(hours=23)
     print("  KIS 토큰 발급 완료")
     return _token_cache["token"]
 
@@ -118,25 +119,41 @@ def get_stock_info(ticker: str) -> dict:
     out = res.json().get("output", {})
 
     return {
-        "price":       int(out.get("stck_prpr",   0)),   # 현재가
-        "change":      int(out.get("prdy_vrss",   0)),   # 전일대비
-        "change_rate": float(out.get("prdy_ctrt", 0)),   # 등락률(%)
-        "volume":      int(out.get("acml_vol",    0)),   # 누적거래량
-        "tr_value":    int(out.get("acml_tr_pbmn",0)),   # 누적거래대금
-        "open":        int(out.get("stck_oprc",   0)),   # 시가
-        "high":        int(out.get("stck_hgpr",   0)),   # 고가
-        "low":         int(out.get("stck_lwpr",   0)),   # 저가
-        "w52_high":    int(out.get("w52_hgpr",    0)),   # 52주 최고
-        "w52_low":     int(out.get("w52_lwpr",    0)),   # 52주 최저
+        "price":       int(out.get("stck_prpr",    0)),
+        "change":      int(out.get("prdy_vrss",    0)),
+        "change_rate": float(out.get("prdy_ctrt",  0)),
+        "volume":      int(out.get("acml_vol",     0)),
+        "tr_value":    int(out.get("acml_tr_pbmn", 0)),
+        "open":        int(out.get("stck_oprc",    0)),
+        "high":        int(out.get("stck_hgpr",    0)),
+        "low":         int(out.get("stck_lwpr",    0)),
+        "w52_high":    int(out.get("w52_hgpr",     0)),
+        "w52_low":     int(out.get("w52_lwpr",     0)),
     }
+
+
+# ── 유가 / 환율 ───────────────────────────────────────────────────
+
+def get_macro() -> dict:
+    """WTI 유가 + 달러 환율 조회 (yfinance)"""
+    try:
+        import yfinance as yf
+        wti = yf.Ticker("CL=F").fast_info
+        usd = yf.Ticker("USDKRW=X").fast_info
+        return {
+            "oil":    round(wti.last_price, 1),
+            "usdkrw": int(usd.last_price),
+        }
+    except Exception:
+        return {"oil": None, "usdkrw": None}
 
 
 # ── 포맷 헬퍼 ─────────────────────────────────────────────────────
 
-def fmt_price(v: int)  -> str:
+def fmt_price(v: int) -> str:
     return f"{v:,}원"
 
-def fmt_value(v: int)  -> str:
+def fmt_value(v: int) -> str:
     if v >= 1_000_000_000_000: return f"{v/1_000_000_000_000:.1f}조"
     if v >= 100_000_000:       return f"{v/100_000_000:.0f}억"
     return f"{v:,}원"
@@ -149,13 +166,12 @@ def fmt_vol(v: int) -> str:
 # ── 한줄 코멘트 ───────────────────────────────────────────────────
 
 def get_comment(info: dict, batch: str) -> str:
-    rate      = info["change_rate"]
-    price     = info["price"]
-    w52_high  = info["w52_high"]
-    w52_low   = info["w52_low"]
-    parts     = []
+    rate     = info["change_rate"]
+    price    = info["price"]
+    w52_high = info["w52_high"]
+    w52_low  = info["w52_low"]
+    parts    = []
 
-    # 갭 분석 (시초가 배치만)
     if batch == "morning" and info["open"] > 0 and info["change"] != 0:
         prev_close = info["price"] - info["change"]
         if prev_close > 0:
@@ -165,13 +181,11 @@ def get_comment(info: dict, batch: str) -> str:
             elif gap_pct <= -1:
                 parts.append(f"갭다운 {gap_pct:.1f}%")
 
-    # 52주 위치
     if w52_high > 0 and price >= w52_high * 0.98:
         parts.append("52주 신고가 근접")
     elif w52_low > 0 and price <= w52_low * 1.05:
         parts.append("52주 저점 근접")
 
-    # 등락 방향
     if   rate >= 3:  parts.append("강세 흐름")
     elif rate >= 1:  parts.append("상승 흐름")
     elif rate <= -3: parts.append("약세 흐름")
@@ -223,15 +237,23 @@ def tg_send(text: str):
 # ── 배치 실행 ─────────────────────────────────────────────────────
 
 def run_batch(batch: str):
-    now     = datetime.now()
+    now     = datetime.now(KST)
     label   = BATCH_LABEL.get(batch, batch)
     tickers = BATCH_STOCKS.get(batch, [])
 
     print(f"\n{'='*50}")
-    print(f"  키움 서포터즈  {now.strftime('%Y-%m-%d %H:%M')}  {label}")
+    print(f"  키움 서포터즈  {now.strftime('%Y-%m-%d %H:%M')} KST  {label}")
     print(f"{'='*50}")
 
-    tg_send(f"📊 키움 서포터즈  {now.strftime('%m/%d %H:%M')}  {label}")
+    macro   = get_macro()
+    oil_str = f"WTI  ${macro['oil']}" if macro["oil"] else ""
+    usd_str = f"달러  {macro['usdkrw']:,}원" if macro["usdkrw"] else ""
+    macro_line = "  /  ".join(filter(None, [oil_str, usd_str]))
+
+    header = f"📊 키움 서포터즈  {now.strftime('%m/%d %H:%M')} KST  {label}"
+    if macro_line:
+        header += f"\n{macro_line}"
+    tg_send(header)
     time.sleep(0.3)
 
     for ticker in tickers:
@@ -254,8 +276,9 @@ def run_batch(batch: str):
 
 
 def detect_batch() -> str:
-    """현재 시각 기준 배치 자동 감지"""
-    t = datetime.now().hour * 60 + datetime.now().minute
+    """KST 기준 배치 자동 감지"""
+    now = datetime.now(KST)
+    t   = now.hour * 60 + now.minute
     if   t < 10 * 60: return "morning"
     elif t < 13 * 60: return "midday"
     else:             return "afternoon"

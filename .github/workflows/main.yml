@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: install-packages
-        run: pip install requests python-dotenv schedule
+        run: pip install requests python-dotenv schedule yfinance
       - name: run-script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
