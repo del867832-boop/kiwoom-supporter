@@ -191,7 +191,13 @@ def get_top_stocks(n: int) -> list:
 
         if stocks:
             stocks.sort(key=lambda x: x["tr_value"], reverse=True)
-            return stocks[:n]
+
+            # 삼성전자·SK하이닉스 항상 포함, 나머지 n-2개 동적
+            FIXED = {"005930", "000660"}  # 삼성전자, SK하이닉스
+            fixed   = [s for s in stocks if s["ticker"] in FIXED]
+            dynamic = [s for s in stocks if s["ticker"] not in FIXED]
+            result  = fixed + dynamic[: max(n - len(fixed), 0)]
+            return result[:n]
         raise Exception("output 비어있음")
 
     except Exception as e:
@@ -365,6 +371,41 @@ def get_investor_data(ticker: str) -> dict:
         return {"frgn": 0, "orgn": 0}
 
 
+# ── 종목 뉴스 ────────────────────────────────────────────────────
+
+def get_stock_news(stock_name: str, minutes: int = 200) -> list:
+    """Google News RSS로 최근 N분 내 기사 1~2건 조회"""
+    try:
+        import feedparser
+        from urllib.parse import quote
+        query  = quote(f"{stock_name} 주식")
+        url    = f"https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
+        feed   = feedparser.parse(url)
+        cutoff = datetime.now(KST) - timedelta(minutes=minutes)
+
+        results = []
+        for entry in feed.entries[:10]:
+            try:
+                ps  = entry.get("published_parsed")
+                if not ps:
+                    continue
+                pub = datetime(*ps[:6], tzinfo=timezone.utc).astimezone(KST)
+                if pub < cutoff:
+                    continue
+                title = entry.get("title", "")
+                if " - " in title:
+                    title = title.rsplit(" - ", 1)[0].strip()
+                results.append({"title": title, "link": entry.get("link", ""), "pub": pub})
+                if len(results) >= 2:
+                    break
+            except Exception:
+                continue
+        return results
+    except Exception as e:
+        print(f"  뉴스 조회 실패 ({stock_name}): {e}")
+        return []
+
+
 # ── 유가 / 환율 ───────────────────────────────────────────────────
 
 def get_macro() -> dict:
@@ -524,7 +565,7 @@ def _fallback_discussion(info: dict, inv: dict) -> str:
 # ── 포스트 빌드 ───────────────────────────────────────────────────
 
 def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
-               macro: dict = None, ta: dict = None) -> str:
+               macro: dict = None, ta: dict = None, news: list = None) -> str:
     name     = info["name"]
     arrow    = "▲" if info["change_rate"] > 0 else ("▼" if info["change_rate"] < 0 else "─")
     sign     = "+" if info["change_rate"] > 0 else ""
@@ -555,6 +596,13 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
         "팔로우하고 정보 얻어가세요! 원하는 종목이나 지표 있으면 댓글로 알려주세요 🙌"
     )
 
+    news_lines = ""
+    if news:
+        items = "\n".join(
+            f"• {n['title']}\n  {n['link']}" for n in news
+        )
+        news_lines = f"\n📰 관련 뉴스\n{items}\n"
+
     return (
         f"{icon} {name}  {time_str} 현재\n"
         f"\n"
@@ -565,6 +613,7 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
         f"{ta_line}"
         f"\n"
         f"{comment}\n"
+        f"{news_lines}"
         f"\n"
         f"{follow_line}\n"
         f"\n"
@@ -642,8 +691,11 @@ def run_batch(batch: str):
             ta      = calc_ta(history)
             time.sleep(0.2)
 
+            news = get_stock_news(name)
+            time.sleep(0.3)
+
             title = f"{name} {now.strftime('%m/%d')} 장중 실시간"
-            body  = build_post(stock, inv, batch, rank, now, macro, ta)
+            body  = build_post(stock, inv, batch, rank, now, macro, ta, news)
 
             tg_send(title)
             time.sleep(0.2)
