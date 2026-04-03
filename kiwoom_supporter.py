@@ -160,7 +160,7 @@ def get_top_stocks(n: int) -> list:
 
         stocks = []
         for item in data.get("output", []):
-            if len(stocks) >= n:
+            if len(stocks) >= 50:  # 50개 수집 후 거래대금 기준 재정렬
                 break
             name = item.get("hts_kor_isnm", "")
             if is_skip(name):
@@ -186,7 +186,8 @@ def get_top_stocks(n: int) -> list:
                 continue
 
         if stocks:
-            return stocks
+            stocks.sort(key=lambda x: x["tr_value"], reverse=True)
+            return stocks[:n]
         raise Exception("output 비어있음")
 
     except Exception as e:
