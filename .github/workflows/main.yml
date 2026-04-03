@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: install-packages
-        run: pip install requests python-dotenv schedule yfinance anthropic feedparser
+        run: pip install requests python-dotenv schedule yfinance anthropic
       - name: run-script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
