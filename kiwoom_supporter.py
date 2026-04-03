@@ -151,14 +151,26 @@ def get_top_stocks(n: int) -> list:
         data = res.json()
         print(f"  volume-rank 응답: rt_cd={data.get('rt_cd')} msg={data.get('msg1','')}")
 
+        # ETF/ETN/파생상품 필터링 키워드
+        SKIP = ["KODEX","TIGER","KINDEX","ARIRANG","HANARO","KBSTAR","PLUS",
+                "MASTER","TIMEFOLIO","인버스","레버리지","선물","ETN","리츠","채권"]
+
+        def is_skip(name: str) -> bool:
+            return any(k in name for k in SKIP)
+
         stocks = []
-        for item in data.get("output", [])[:n]:
+        for item in data.get("output", []):
+            if len(stocks) >= n:
+                break
+            name = item.get("hts_kor_isnm", "")
+            if is_skip(name):
+                continue
             try:
                 def _i(k): return int(item.get(k) or 0)
                 def _f(k): return float(item.get(k) or 0)
                 stocks.append({
                     "ticker":      item.get("mksc_shrn_iscd", ""),
-                    "name":        item.get("hts_kor_isnm", ""),
+                    "name":        name,
                     "price":       _i("stck_prpr"),
                     "change":      _i("prdy_vrss"),
                     "change_rate": _f("prdy_ctrt"),
