@@ -197,15 +197,23 @@ def get_comment(info: dict, batch: str) -> str:
 
 # ── 포스트 빌드 ───────────────────────────────────────────────────
 
-def build_post(ticker: str, info: dict, batch: str, now: datetime) -> str:
-    name      = NAME_MAP.get(ticker, ticker)
-    sector    = SECTOR_MAP.get(ticker, "")
-    arrow     = "▲" if info["change_rate"] > 0 else ("▼" if info["change_rate"] < 0 else "─")
-    sign      = "+" if info["change_rate"] > 0 else ""
-    icon      = "📈" if info["change_rate"] >= 0 else "📉"
-    comment   = get_comment(info, batch)
+def build_post(ticker: str, info: dict, batch: str, now: datetime, macro: dict = None) -> str:
+    name       = NAME_MAP.get(ticker, ticker)
+    sector     = SECTOR_MAP.get(ticker, "")
+    arrow      = "▲" if info["change_rate"] > 0 else ("▼" if info["change_rate"] < 0 else "─")
+    sign       = "+" if info["change_rate"] > 0 else ""
+    icon       = "📈" if info["change_rate"] >= 0 else "📉"
+    comment    = get_comment(info, batch)
     sector_tag = f"#{sector} " if sector else ""
-    time_str  = now.strftime("%H:%M")
+    time_str   = now.strftime("%H:%M")
+
+    macro_line = ""
+    if macro:
+        parts = []
+        if macro.get("oil"):    parts.append(f"WTI ${macro['oil']}")
+        if macro.get("usdkrw"): parts.append(f"달러 {macro['usdkrw']:,}원")
+        if parts:
+            macro_line = "  /  ".join(parts) + "\n"
 
     return (
         f"{icon} {name}  {time_str} 현재\n"
@@ -213,6 +221,7 @@ def build_post(ticker: str, info: dict, batch: str, now: datetime) -> str:
         f"현재가    {fmt_price(info['price'])}  {arrow} {sign}{info['change_rate']:.2f}%\n"
         f"거래대금  {fmt_value(info['tr_value'])}\n"
         f"거래량    {fmt_vol(info['volume'])}\n"
+        f"{macro_line}"
         f"\n"
         f"{comment}\n"
         f"\n"
@@ -260,7 +269,7 @@ def run_batch(batch: str):
         name = NAME_MAP.get(ticker, ticker)
         try:
             info = get_stock_info(ticker)
-            post = build_post(ticker, info, batch, now)
+            post = build_post(ticker, info, batch, now, macro)
             print(f"  ✅ {name}  {info['price']:,}원  {info['change_rate']:+.2f}%")
         except Exception as e:
             print(f"  ⚠️  {name} 오류: {e}")
