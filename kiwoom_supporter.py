@@ -103,6 +103,10 @@ def get_stock_info(ticker: str, name: str = "") -> dict:
     params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}
     res = requests.get(url, headers=headers, params=params, timeout=10)
     out = res.json().get("output", {})
+    import sys
+    frgn_raw = out.get("frgn_ntby_qty", "MISSING")
+    orgn_raw = out.get("orgn_ntby_qty", "MISSING")
+    print(f"  [{ticker}] frgn_ntby_qty={frgn_raw} orgn_ntby_qty={orgn_raw}"); sys.stdout.flush()
     def _int(k):  return int(out.get(k) or 0)
     def _flt(k):  return float(out.get(k) or 0)
     return {
