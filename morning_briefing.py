@@ -122,7 +122,7 @@ def get_ai_view(mkt: dict, disclosures: list) -> str:
             f"금 ${mkt['gold']['close']:.0f} / "
             f"달러원 {mkt['usdkrw']['close']:.0f}원\n\n"
             f"오늘 주요 공시:\n{disc_text}\n\n"
-            f"규칙: 3문장, 핵심만, 국내 시장 영향 중심, 단정적으로"
+            f"작성 규칙: 3문장, 전문가 격식체(~입니다/~습니다), 수치 근거 명시, 질문·이모지 금지, 국내 시장 영향 중심"
         )
 
         res = requests.post(

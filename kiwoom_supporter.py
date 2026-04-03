@@ -434,15 +434,21 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
         ta_str = " / ".join(ta_parts)
 
     prompt = (
-        f"키움증권 커뮤니티 포스팅용 글을 써주세요.\n\n"
+        f"당신은 15년 경력의 주식 애널리스트입니다. 아래 데이터를 보고 시황 분석 코멘트를 작성하세요.\n\n"
         f"종목: {name} (거래대금 {rank}위)\n"
         f"현재가: {price:,}원 ({'+' if rate>=0 else ''}{rate:.2f}%)\n"
         f"거래대금: {tr_val} / 거래량: {vol}\n"
         f"{frgn_str} / {orgn_str}\n"
         f"기술지표: {ta_str if ta_str else '없음'}\n"
         f"시간대: {batch_label}\n\n"
-        f"아래 한 블록만 출력하세요 (다른 설명 없이):\n"
-        f"[VIEW] 기술지표 기반 판단 2~3문장 (MA 위치·RSI·거래량배율 근거 포함, 매번 다르게, 단정적으로, 질문 형식 금지)"
+        f"작성 규칙:\n"
+        f"- 2~3문장, 간결하고 단정적인 전문가 어조\n"
+        f"- 수치 근거 명시 (MA 위치·RSI·거래량배율·수급 중 해당 항목)\n"
+        f"- 존댓말, 격식체 사용 (~입니다 / ~습니다)\n"
+        f"- 질문·감탄사·이모지 금지\n"
+        f"- 매번 다른 표현 사용\n\n"
+        f"아래 한 블록만 출력 (다른 설명 없이):\n"
+        f"[VIEW] (분석 코멘트)"
     )
 
     try:
