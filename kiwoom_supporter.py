@@ -207,6 +207,132 @@ def get_top_stocks(n: int) -> list:
         return result
 
 
+# ── 일봉 / 기술적 분석 ───────────────────────────────────────────
+
+def get_price_history(ticker: str, n: int = 60) -> list:
+    """KIS API로 최근 n영업일 일봉 데이터 조회"""
+    try:
+        token = get_token()
+        url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+        headers = {
+            "content-type":  "application/json",
+            "authorization": f"Bearer {token}",
+            "appkey":        KIS_APP_KEY,
+            "appsecret":     KIS_APP_SECRET,
+            "tr_id":         "FHKST01010400",
+        }
+        params = {
+            "fid_cond_mrkt_div_code": "J",
+            "fid_input_iscd":         ticker,
+            "fid_input_date_1":       "",
+            "fid_input_date_2":       "",
+            "fid_period_div_code":    "D",
+            "fid_org_adj_prc":        "0",
+        }
+        res  = requests.get(url, headers=headers, params=params, timeout=10)
+        data = res.json()
+        rows = data.get("output2") or data.get("output") or []
+        return rows[:n]
+    except Exception as e:
+        print(f"  일봉 조회 실패 ({ticker}): {e}")
+        return []
+
+
+def calc_ta(rows: list) -> dict:
+    """MA20 / MA60 / 골든·데드크로스 / RSI(14) / 거래량배율 계산"""
+    if not rows or len(rows) < 5:
+        return {}
+
+    rows = list(reversed(rows))   # KIS API는 최신이 앞 → 오래된 순 정렬
+
+    closes, volumes = [], []
+    for r in rows:
+        c = int(r.get("stck_clpr") or 0)
+        v = int(r.get("acml_vol")  or 0)
+        if c > 0:
+            closes.append(c)
+            volumes.append(v)
+
+    if not closes:
+        return {}
+
+    n      = len(closes)
+    result = {}
+
+    # MA5
+    if n >= 5:
+        ma5 = sum(closes[-5:]) / 5
+        result["ma5"]       = ma5
+        result["above_ma5"] = closes[-1] > ma5
+
+    # MA20 + 골든/데드크로스
+    if n >= 20:
+        ma20 = sum(closes[-20:]) / 20
+        result["ma20"]       = ma20
+        result["above_ma20"] = closes[-1] > ma20
+
+        if n >= 21 and "ma5" in result:
+            prev_ma5  = sum(closes[-6:-1])  / 5
+            prev_ma20 = sum(closes[-21:-1]) / 20
+            if prev_ma5 < prev_ma20 and result["ma5"] > ma20:
+                result["cross"] = "골든크로스"
+            elif prev_ma5 > prev_ma20 and result["ma5"] < ma20:
+                result["cross"] = "데드크로스"
+
+    # MA60
+    if n >= 60:
+        ma60 = sum(closes[-60:]) / 60
+        result["ma60"]       = ma60
+        result["above_ma60"] = closes[-1] > ma60
+
+    # RSI (14)
+    if n >= 15:
+        gains, losses = [], []
+        for i in range(n - 14, n):
+            diff = closes[i] - closes[i - 1]
+            gains.append(max(diff, 0))
+            losses.append(max(-diff, 0))
+        avg_gain = sum(gains)  / 14
+        avg_loss = sum(losses) / 14
+        rsi = 100.0 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
+        result["rsi"] = round(rsi, 1)
+        result["rsi_label"] = "과매수" if rsi >= 70 else ("과매도" if rsi <= 30 else "중립")
+
+    # 거래량배율 (오늘 / 직전 20일 평균)
+    if len(volumes) >= 21:
+        avg_vol = sum(volumes[-21:-1]) / 20
+        if avg_vol > 0:
+            result["vol_ratio"] = round(volumes[-1] / avg_vol, 1)
+
+    return result
+
+
+def fmt_ta_line(ta: dict) -> str:
+    """기술지표 한 줄 요약"""
+    if not ta:
+        return ""
+    parts = []
+
+    ma_parts = []
+    if "above_ma20" in ta:
+        ma_parts.append(f"MA20 {'▲' if ta['above_ma20'] else '▼'}")
+    if "above_ma60" in ta:
+        ma_parts.append(f"MA60 {'▲' if ta['above_ma60'] else '▼'}")
+    if ma_parts:
+        parts.append(" · ".join(ma_parts))
+
+    if "cross" in ta:
+        parts.append(ta["cross"])
+
+    if "rsi" in ta:
+        parts.append(f"RSI {ta['rsi']} ({ta['rsi_label']})")
+
+    if "vol_ratio" in ta:
+        parts.append(f"거래량 {ta['vol_ratio']}배")
+
+    return ("📊 " + "  |  ".join(parts)) if parts else ""
+
+
 # ── 유가 / 환율 ───────────────────────────────────────────────────
 
 def get_macro() -> dict:
@@ -240,7 +366,7 @@ def fmt_vol(v: int) -> str:
 
 # ── Claude API 동적 멘트 생성 ─────────────────────────────────────
 
-def get_ai_comment(info: dict, inv: dict, batch: str, rank: int) -> tuple:
+def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None) -> tuple:
     """Claude API로 코멘트 + 토론 질문 생성. 실패 시 룰 기반 폴백."""
     if not ANTHROPIC_API_KEY:
         return _fallback_comment(info, batch), _fallback_discussion(info, inv)
@@ -257,15 +383,26 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int) -> tuple:
     frgn_str = f"외국인 {'+' if frgn>=0 else ''}{frgn//10000}만주" if frgn != 0 else "외국인 데이터 없음"
     orgn_str = f"기관 {'+' if orgn>=0 else ''}{orgn//10000}만주"   if orgn != 0 else "기관 데이터 없음"
 
+    ta_str = ""
+    if ta:
+        ta_parts = []
+        if "above_ma20" in ta: ta_parts.append(f"MA20 {'위' if ta['above_ma20'] else '아래'}")
+        if "above_ma60" in ta: ta_parts.append(f"MA60 {'위' if ta['above_ma60'] else '아래'}")
+        if "cross"      in ta: ta_parts.append(ta["cross"])
+        if "rsi"        in ta: ta_parts.append(f"RSI {ta['rsi']}({ta['rsi_label']})")
+        if "vol_ratio"  in ta: ta_parts.append(f"거래량 평균比 {ta['vol_ratio']}배")
+        ta_str = " / ".join(ta_parts)
+
     prompt = (
         f"키움증권 커뮤니티 포스팅용 짧은 글을 써주세요.\n\n"
         f"종목: {name} (거래대금 {rank}위)\n"
         f"현재가: {price:,}원 ({'+' if rate>=0 else ''}{rate:.2f}%)\n"
         f"거래대금: {tr_val} / 거래량: {vol}\n"
         f"{frgn_str} / {orgn_str}\n"
+        f"기술지표: {ta_str if ta_str else '없음'}\n"
         f"시간대: {batch_label}\n\n"
         f"아래 두 줄만 출력하세요 (다른 설명 없이):\n"
-        f"[COMMENT] 현재 시황 한 줄 (20자 이내, 매번 다른 표현)\n"
+        f"[COMMENT] 현재 시황 한 줄 (20자 이내, 기술지표 반영, 매번 다른 표현)\n"
         f"[QUESTION] 댓글 유도 질문 한 줄 (40자 이내, 구체적 수치 포함, 끝에 👇)"
     )
 
@@ -347,12 +484,13 @@ def _fallback_discussion(info: dict, inv: dict) -> str:
 
 # ── 포스트 빌드 ───────────────────────────────────────────────────
 
-def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macro: dict = None) -> str:
+def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
+               macro: dict = None, ta: dict = None) -> str:
     name     = info["name"]
     arrow    = "▲" if info["change_rate"] > 0 else ("▼" if info["change_rate"] < 0 else "─")
     sign     = "+" if info["change_rate"] > 0 else ""
     icon     = "📈" if info["change_rate"] >= 0 else "📉"
-    comment, question = get_ai_comment(info, inv, batch, rank)
+    comment, question = get_ai_comment(info, inv, batch, rank, ta)
     time_str = now.strftime("%H:%M")
 
     macro_line = ""
@@ -372,6 +510,8 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macr
     if frgn != 0 or orgn != 0:
         inv_lines = f"외국인    {frgn_str}\n기관      {orgn_str}\n"
 
+    ta_line = fmt_ta_line(ta) + "\n" if ta else ""
+
     return (
         f"{icon} {name}  {time_str} 현재\n"
         f"\n"
@@ -379,6 +519,7 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macr
         f"거래대금  {fmt_value(info['tr_value'])}\n"
         f"거래량    {fmt_vol(info['volume'])}\n"
         f"{inv_lines}"
+        f"{ta_line}"
         f"\n"
         f"{comment}\n"
         f"\n"
@@ -455,8 +596,12 @@ def run_batch(batch: str):
                 stock.update(detail)
             time.sleep(0.2)
 
+            history = get_price_history(stock["ticker"])
+            ta      = calc_ta(history)
+            time.sleep(0.2)
+
             title = f"{name} {now.strftime('%m/%d')} 장중 실시간"
-            body  = build_post(stock, inv, batch, rank, now, macro)
+            body  = build_post(stock, inv, batch, rank, now, macro, ta)
 
             tg_send(title)
             time.sleep(0.2)
