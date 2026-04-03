@@ -118,6 +118,8 @@ def get_stock_info(ticker: str, name: str = "") -> dict:
         "low":         _int("stck_lwpr"),
         "w52_high":    _int("w52_hgpr"),
         "w52_low":     _int("w52_lwpr"),
+        "frgn_ntby":   _int("frgn_ntby_qty"),   # 외국인 순매수량
+        "orgn_ntby":   _int("orgn_ntby_qty"),    # 기관 순매수량
     }
 
 
@@ -424,18 +426,25 @@ def run_batch(batch: str):
     for rank, stock in enumerate(stocks, start=1):
         name = stock.get("name", "?")
         try:
-            # 외국인·기관 수급 조회
-            inv = get_investor_data(stock["ticker"])
+            # inquire-price로 상세 데이터 + 외국인/기관 수급 한번에 조회
+            detail = get_stock_info(stock["ticker"], name)
+            inv = {
+                "frgn": detail.get("frgn_ntby", 0),
+                "orgn": detail.get("orgn_ntby", 0),
+            }
+            # volume-rank에서 가져온 거래대금이 더 최신이면 유지
+            if detail["tr_value"] > 0:
+                stock.update(detail)
             time.sleep(0.2)
 
             title = f"{name} {now.strftime('%m/%d')} 장중 실시간"
             body  = build_post(stock, inv, batch, rank, now, macro)
 
-            # 제목 / 본문 따로 전송
             tg_send(title)
             time.sleep(0.2)
             tg_send(body)
-            print(f"  ✅ [{rank}위] {name}  {stock['price']:,}원  {stock['change_rate']:+.2f}%")
+            frgn_disp = f"외국인 {'+' if inv['frgn']>=0 else ''}{inv['frgn']//10000}만주" if inv['frgn'] != 0 else ""
+            print(f"  ✅ {name}  {stock['price']:,}원  {stock['change_rate']:+.2f}%  {frgn_disp}")
         except Exception as e:
             print(f"  ⚠️  {name} 오류: {e}")
             tg_send(f"📊 {name}  {now.strftime('%H:%M')}\n\n데이터 오류")
