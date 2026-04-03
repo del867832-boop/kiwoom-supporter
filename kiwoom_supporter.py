@@ -193,30 +193,33 @@ def get_top_stocks(n: int) -> list:
 # ── 외국인/기관 수급 ──────────────────────────────────────────────
 
 def get_investor_data(ticker: str) -> dict:
-    """외국인·기관 당일 순매수량 조회"""
-    token = get_token()
-    url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
-    headers = {
-        "content-type": "application/json",
-        "authorization": f"Bearer {token}",
-        "appkey":    KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id":     "FHKST01010900",
-    }
-    params = {
-        "fid_cond_mrkt_div_code": "J",
-        "fid_input_iscd":         ticker,
-    }
-    res  = requests.get(url, headers=headers, params=params, timeout=10)
-    data = res.json()
-    rows = data.get("output", [])
-    if not rows:
+    """외국인·기관 당일 순매수량 조회 (실패 시 0 반환)"""
+    try:
+        token = get_token()
+        url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {token}",
+            "appkey":    KIS_APP_KEY,
+            "appsecret": KIS_APP_SECRET,
+            "tr_id":     "FHKST01010900",
+        }
+        params = {
+            "fid_cond_mrkt_div_code": "J",
+            "fid_input_iscd":         ticker,
+        }
+        res  = requests.get(url, headers=headers, params=params, timeout=10)
+        data = res.json()
+        rows = data.get("output", [])
+        if not rows:
+            return {"frgn": 0, "orgn": 0}
+        today = rows[0]
+        return {
+            "frgn": int(today.get("frgn_ntby_qty") or 0),
+            "orgn": int(today.get("orgn_ntby_qty") or 0),
+        }
+    except Exception:
         return {"frgn": 0, "orgn": 0}
-    today = rows[0]
-    return {
-        "frgn": int(today.get("frgn_ntby_qty", 0)),   # 외국인 순매수량
-        "orgn": int(today.get("orgn_ntby_qty", 0)),    # 기관 순매수량
-    }
 
 
 # ── 유가 / 환율 ───────────────────────────────────────────────────
