@@ -50,16 +50,34 @@ def get_stooq(symbol: str) -> dict:
 
 def get_market_data() -> dict:
     """미국 지수 + 원자재 + 환율"""
-    symbols = {
+    result = {k: get_stooq(v) for k, v in {
         "sp500":  "^spx",
         "nasdaq": "^ndx",
         "dow":    "^dji",
-        "sox":    "smh.us",  # 필라델피아 반도체 ETF (SOX 대용)
-        "wti":    "cl.f",
-        "gold":   "xauusd",
+        "sox":    "smh.us",   # 필라델피아 반도체 ETF
         "usdkrw": "usdkrw",
-    }
-    return {k: get_stooq(v) for k, v in symbols.items()}
+    }.items()}
+
+    # WTI·금: 가격은 실물 심볼, 변화율은 ETF 심볼에서 가져옴
+    wti_price = get_stooq("cl.f")
+    wti_chg   = get_stooq("uso.us")   # WTI ETF
+    if wti_price and wti_chg:
+        result["wti"] = {"close": wti_price["close"], "change_pct": wti_chg["change_pct"]}
+    elif wti_price:
+        result["wti"] = wti_price
+    else:
+        result["wti"] = {}
+
+    gold_price = get_stooq("xauusd")
+    gold_chg   = get_stooq("gld.us")  # 금 ETF
+    if gold_price and gold_chg:
+        result["gold"] = {"close": gold_price["close"], "change_pct": gold_chg["change_pct"]}
+    elif gold_price:
+        result["gold"] = gold_price
+    else:
+        result["gold"] = {}
+
+    return result
 
 
 # ── DART 주요 공시 ────────────────────────────────────────────────
