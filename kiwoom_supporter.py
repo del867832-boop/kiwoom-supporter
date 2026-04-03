@@ -394,7 +394,7 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
         ta_str = " / ".join(ta_parts)
 
     prompt = (
-        f"키움증권 커뮤니티 포스팅용 짧은 글을 써주세요.\n\n"
+        f"키움증권 커뮤니티 포스팅용 글을 써주세요.\n\n"
         f"종목: {name} (거래대금 {rank}위)\n"
         f"현재가: {price:,}원 ({'+' if rate>=0 else ''}{rate:.2f}%)\n"
         f"거래대금: {tr_val} / 거래량: {vol}\n"
@@ -402,7 +402,7 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
         f"기술지표: {ta_str if ta_str else '없음'}\n"
         f"시간대: {batch_label}\n\n"
         f"아래 두 줄만 출력하세요 (다른 설명 없이):\n"
-        f"[COMMENT] 현재 시황 한 줄 (20자 이내, 기술지표 반영, 매번 다른 표현)\n"
+        f"[VIEW] 기술지표 기반 판단 2~3문장 (MA 위치·RSI·거래량배율 근거 포함, 매번 다르게, 단정적으로)\n"
         f"[QUESTION] 댓글 유도 질문 한 줄 (40자 이내, 구체적 수치 포함, 끝에 👇)"
     )
 
@@ -422,16 +422,24 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
             timeout=15,
         )
         text     = res.json()["content"][0]["text"].strip()
-        comment  = ""
+        view     = ""
         question = ""
-        for line in text.splitlines():
-            if line.startswith("[COMMENT]"):
-                comment  = line.replace("[COMMENT]", "").strip()
+        lines    = text.splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith("[VIEW]"):
+                # [VIEW] 이후 여러 줄일 수 있으므로 다음 태그 전까지 수집
+                view_lines = [line.replace("[VIEW]", "").strip()]
+                for j in range(i + 1, len(lines)):
+                    if lines[j].startswith("["):
+                        break
+                    if lines[j].strip():
+                        view_lines.append(lines[j].strip())
+                view = " ".join(view_lines).strip()
             elif line.startswith("[QUESTION]"):
                 question = line.replace("[QUESTION]", "").strip()
-        if comment and question:
-            print(f"  AI 멘트 완료: {comment[:20]}...")
-            return comment, question
+        if view and question:
+            print(f"  AI 뷰 완료: {view[:20]}...")
+            return view, question
     except Exception as e:
         print(f"  AI 멘트 실패 ({e}), 폴백 사용")
 
@@ -510,7 +518,8 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
     if frgn != 0 or orgn != 0:
         inv_lines = f"외국인    {frgn_str}\n기관      {orgn_str}\n"
 
-    ta_line = fmt_ta_line(ta) + "\n" if ta else ""
+    ta_line    = fmt_ta_line(ta) + "\n" if ta else ""
+    follow_line = "매일 10:30 / 14:00 / 15:30 거래대금 상위 종목 실시간 업데이트 중 📊 팔로우하시면 수급 동향 빠르게 받아보실 수 있습니다!"
 
     return (
         f"{icon} {name}  {time_str} 현재\n"
@@ -522,6 +531,8 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
         f"{ta_line}"
         f"\n"
         f"{comment}\n"
+        f"\n"
+        f"{follow_line}\n"
         f"\n"
         f"{question}\n"
         f"\n"
