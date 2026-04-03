@@ -103,19 +103,21 @@ def get_stock_info(ticker: str, name: str = "") -> dict:
     params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}
     res = requests.get(url, headers=headers, params=params, timeout=10)
     out = res.json().get("output", {})
+    def _int(k):  return int(out.get(k) or 0)
+    def _flt(k):  return float(out.get(k) or 0)
     return {
         "ticker":      ticker,
-        "name":        out.get("hts_kor_isnm", name),
-        "price":       int(out.get("stck_prpr",    0)),
-        "change":      int(out.get("prdy_vrss",    0)),
-        "change_rate": float(out.get("prdy_ctrt",  0)),
-        "volume":      int(out.get("acml_vol",     0)),
-        "tr_value":    int(out.get("acml_tr_pbmn", 0)),
-        "open":        int(out.get("stck_oprc",    0)),
-        "high":        int(out.get("stck_hgpr",    0)),
-        "low":         int(out.get("stck_lwpr",    0)),
-        "w52_high":    int(out.get("w52_hgpr",     0)),
-        "w52_low":     int(out.get("w52_lwpr",     0)),
+        "name":        out.get("hts_kor_isnm") or name,
+        "price":       _int("stck_prpr"),
+        "change":      _int("prdy_vrss"),
+        "change_rate": _flt("prdy_ctrt"),
+        "volume":      _int("acml_vol"),
+        "tr_value":    _int("acml_tr_pbmn"),
+        "open":        _int("stck_oprc"),
+        "high":        _int("stck_hgpr"),
+        "low":         _int("stck_lwpr"),
+        "w52_high":    _int("w52_hgpr"),
+        "w52_low":     _int("w52_lwpr"),
     }
 
 
@@ -133,7 +135,7 @@ def get_top_stocks(n: int) -> list:
             "custtype":  "P",
         }
         params = {
-            "FID_COND_MRK_DIV_CODE":   "J",
+            "FID_COND_MRKT_DIV_CODE":  "J",
             "FID_COND_SCR_DIV_CODE":   "20171",
             "FID_INPUT_ISCD":          "0000",
             "FID_DIV_CLS_CODE":        "0",
@@ -152,17 +154,19 @@ def get_top_stocks(n: int) -> list:
         stocks = []
         for item in data.get("output", [])[:n]:
             try:
+                def _i(k): return int(item.get(k) or 0)
+                def _f(k): return float(item.get(k) or 0)
                 stocks.append({
                     "ticker":      item.get("mksc_shrn_iscd", ""),
                     "name":        item.get("hts_kor_isnm", ""),
-                    "price":       int(item.get("stck_prpr",    0)),
-                    "change":      int(item.get("prdy_vrss",    0)),
-                    "change_rate": float(item.get("prdy_ctrt",  0)),
-                    "volume":      int(item.get("acml_vol",     0)),
-                    "tr_value":    int(item.get("acml_tr_pbmn", 0)),
-                    "open":        int(item.get("stck_oprc",    0)),
-                    "high":        int(item.get("stck_hgpr",    0)),
-                    "low":         int(item.get("stck_lwpr",    0)),
+                    "price":       _i("stck_prpr"),
+                    "change":      _i("prdy_vrss"),
+                    "change_rate": _f("prdy_ctrt"),
+                    "volume":      _i("acml_vol"),
+                    "tr_value":    _i("acml_tr_pbmn"),
+                    "open":        _i("stck_oprc"),
+                    "high":        _i("stck_hgpr"),
+                    "low":         _i("stck_lwpr"),
                     "w52_high":    0,
                     "w52_low":     0,
                 })
