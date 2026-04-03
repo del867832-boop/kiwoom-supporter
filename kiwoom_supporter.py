@@ -339,7 +339,6 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macr
         f"현재가    {fmt_price(info['price'])}  {arrow} {sign}{info['change_rate']:.2f}%\n"
         f"거래대금  {fmt_value(info['tr_value'])}\n"
         f"거래량    {fmt_vol(info['volume'])}\n"
-        f"{macro_line}"
         f"외국인    {frgn_str}\n"
         f"기관      {orgn_str}\n"
         f"\n"
@@ -347,6 +346,7 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macr
         f"\n"
         f"{question}\n"
         f"\n"
+        f"{macro_line}"
         f"#{name} #장중정보 #거래대금상위"
     )
 
