@@ -19,7 +19,10 @@ KST = timezone(timedelta(hours=9))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 DART_API_KEY       = os.getenv("DART_API_KEY")
-ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY  = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+KIS_APP_KEY        = os.getenv("KIS_APP_KEY")
+KIS_APP_SECRET     = os.getenv("KIS_APP_SECRET")
+KIS_BASE_URL       = "https://openapi.koreainvestment.com:9443"
 
 
 # ── Stooq 데이터 조회 ─────────────────────────────────────────────
@@ -82,24 +85,72 @@ def get_market_data() -> dict:
 
 # ── DART 주요 공시 ────────────────────────────────────────────────
 
+def get_watch_companies() -> set:
+    """전일 거래대금 상위 + 시총 상위 고정 종목명 집합"""
+    # 시총 상위 고정 목록
+    TOP_MARKET_CAP = {
+        "삼성전자", "SK하이닉스", "LG에너지솔루션", "삼성바이오로직스",
+        "현대차", "기아", "셀트리온", "NAVER", "카카오", "삼성SDI",
+        "POSCO홀딩스", "KB금융", "신한지주", "하나금융지주", "현대모비스",
+        "LG화학", "한국전력", "삼성물산", "SK이노베이션", "두산에너빌리티",
+    }
+    # KIS API로 전일 거래대금 상위 추가
+    dynamic = set()
+    try:
+        res = requests.post(
+            f"{KIS_BASE_URL}/oauth2/tokenP",
+            json={"grant_type": "client_credentials",
+                  "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET},
+            timeout=10,
+        )
+        token = res.json().get("access_token")
+        if token:
+            headers = {
+                "content-type": "application/json",
+                "authorization": f"Bearer {token}",
+                "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
+                "tr_id": "FHPST01710000", "custtype": "P",
+            }
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J", "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000", "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "0", "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "000000", "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "", "FID_VOL_CNT": "", "FID_INPUT_DATE_1": "",
+            }
+            data = requests.get(
+                f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank",
+                headers=headers, params=params, timeout=10,
+            ).json()
+            SKIP = ["KODEX","TIGER","KINDEX","ARIRANG","인버스","레버리지","ETN","리츠","채권"]
+            for item in data.get("output", [])[:30]:
+                nm = item.get("hts_kor_isnm", "")
+                if nm and not any(k in nm for k in SKIP):
+                    dynamic.add(nm)
+    except Exception as e:
+        print(f"  KIS 종목 조회 실패: {e}")
+
+    return TOP_MARKET_CAP | dynamic
+
+
 def get_dart_disclosures() -> list:
-    """어제~오늘 주요사항보고 + 정기공시 최대 5건"""
+    """당일 공시 중 관심 종목(거래대금 상위 + 시총 상위) 필터링"""
     if not DART_API_KEY:
         return []
     try:
-        today     = datetime.now(KST).strftime("%Y%m%d")
-        yesterday = (datetime.now(KST) - timedelta(days=1)).strftime("%Y%m%d")
+        today    = datetime.now(KST).strftime("%Y%m%d")
+        watch    = get_watch_companies()
 
         items = []
         for ptype in ("B", "A"):   # B: 주요사항보고, A: 정기공시
             res  = requests.get(
                 "https://opendart.fss.or.kr/api/list.json",
                 params={
-                    "crtfc_key":   DART_API_KEY,
-                    "bgn_de":      yesterday,
-                    "end_de":      today,
-                    "pblntf_ty":   ptype,
-                    "page_count":  20,
+                    "crtfc_key":  DART_API_KEY,
+                    "bgn_de":     today,
+                    "end_de":     today,
+                    "pblntf_ty":  ptype,
+                    "page_count": 100,
                 },
                 timeout=10,
             )
@@ -107,18 +158,105 @@ def get_dart_disclosures() -> list:
             if data.get("status") == "000":
                 items.extend(data.get("list", []))
 
-        # 대형주 우선
-        MAJOR = ["삼성전자", "SK하이닉스", "LG에너지솔루션", "현대차",
-                 "NAVER", "카카오", "삼성바이오로직스", "기아", "POSCO"]
-        priority = [i for i in items if any(m in i.get("corp_name", "") for m in MAJOR)]
-        others   = [i for i in items if i not in priority]
-        return (priority + others)[:5]
+        # 관심 종목에 포함된 공시만 필터
+        filtered = [
+            i for i in items
+            if any(w in i.get("corp_name", "") for w in watch)
+        ]
+        return filtered[:5]
     except Exception as e:
         print(f"  DART 조회 실패: {e}")
         return []
 
 
 # ── Claude AI 뷰 ──────────────────────────────────────────────────
+
+def get_kospi_futures() -> dict:
+    """코스피200 야간선물 (Stooq ks200f.f)"""
+    return get_stooq("ks200f.f")
+
+
+def get_market_investor() -> dict:
+    """전일 코스피 외국인·기관 순매수 (KODEX200 ETF 069500 기준)"""
+    try:
+        res = requests.post(
+            f"{KIS_BASE_URL}/oauth2/tokenP",
+            json={"grant_type": "client_credentials",
+                  "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET},
+            timeout=10,
+        )
+        token = res.json().get("access_token")
+        if not token:
+            return {}
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {token}",
+            "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
+            "tr_id": "FHKST01010900",
+        }
+        res = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
+            headers=headers,
+            params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": "069500"},
+            timeout=10,
+        )
+        data = res.json()
+        rows = data.get("output")
+        if not rows:
+            return {}
+        row = rows[0] if isinstance(rows, list) else rows
+        frgn = int(row.get("frgn_ntby_tr_pbmn") or 0)   # 외국인 순매수 거래대금(백만)
+        orgn = int(row.get("orgn_ntby_tr_pbmn") or 0)    # 기관 순매수 거래대금(백만)
+        return {"frgn": frgn, "orgn": orgn}
+    except Exception as e:
+        print(f"  수급 조회 실패: {e}")
+        return {}
+
+
+def get_prev_leaders(n: int = 5) -> list:
+    """전일 거래대금 상위 종목 (ETF 제외)"""
+    try:
+        res = requests.post(
+            f"{KIS_BASE_URL}/oauth2/tokenP",
+            json={"grant_type": "client_credentials",
+                  "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET},
+            timeout=10,
+        )
+        token = res.json().get("access_token")
+        if not token:
+            return []
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {token}",
+            "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
+            "tr_id": "FHPST01710000", "custtype": "P",
+        }
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J", "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000", "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "0", "FID_TRGT_CLS_CODE": "111111111",
+            "FID_TRGT_EXLS_CLS_CODE": "000000", "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "", "FID_VOL_CNT": "", "FID_INPUT_DATE_1": "",
+        }
+        data = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank",
+            headers=headers, params=params, timeout=10,
+        ).json()
+        SKIP = ["KODEX","TIGER","KINDEX","ARIRANG","HANARO","KBSTAR",
+                "인버스","레버리지","ETN","리츠","채권","선물"]
+        leaders = []
+        for item in data.get("output", []):
+            nm   = item.get("hts_kor_isnm", "")
+            rate = item.get("prdy_ctrt", "0")
+            if nm and not any(k in nm for k in SKIP):
+                leaders.append({"name": nm, "rate": float(rate or 0)})
+            if len(leaders) >= n:
+                break
+        return leaders
+    except Exception as e:
+        print(f"  주도주 조회 실패: {e}")
+        return []
+
 
 def get_ai_view(mkt: dict, disclosures: list) -> str:
     """Claude로 장전 한줄 시황 뷰 생성"""
@@ -177,7 +315,8 @@ def fmt_change(d: dict, price_fmt: str = "{:.0f}") -> str:
     return f"{arrow} {sign}{d['change_pct']:.2f}%"
 
 
-def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime) -> str:
+def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime,
+                  investor: dict = None, leaders: list = None) -> str:
     date_str = now.strftime("%m/%d (%a)").replace(
         "Mon","월").replace("Tue","화").replace("Wed","수").replace(
         "Thu","목").replace("Fri","금").replace("Sat","토").replace("Sun","일")
@@ -189,19 +328,50 @@ def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime) -> 
     wti = mkt.get("wti",    {})
     gld = mkt.get("gold",   {})
     krw = mkt.get("usdkrw", {})
+    fut = mkt.get("futures", {})
 
     def line(label, d, price_fmt="{:,.0f}"):
         if not d:
             return f"{label:<16} ─"
-        p    = price_fmt.format(d["close"])
-        chg  = fmt_change(d)
+        p   = price_fmt.format(d["close"])
+        chg = fmt_change(d)
         return f"{label:<16} {p}   {chg}"
 
-    # 공시 섹션
+    def fmt_money(v):
+        sign = "+" if v >= 0 else ""
+        if abs(v) >= 1000000:
+            return f"{sign}{v/1000000:.1f}조"
+        if abs(v) >= 1000:
+            return f"{sign}{v/1000:.0f}억"
+        return f"{sign}{v}백만"
+
+    # 야간선물
+    futures_line = f"\n🌙 코스피200 야간선물\n{line('K200 선물', fut)}\n" if fut else ""
+
+    # 전일 수급
+    investor_line = ""
+    if investor:
+        frgn = investor.get("frgn", 0)
+        orgn = investor.get("orgn", 0)
+        investor_line = (
+            f"\n💰 전일 수급 (코스피200 ETF 기준)\n"
+            f"외국인  {fmt_money(frgn)}   기관  {fmt_money(orgn)}\n"
+        )
+
+    # 전일 주도주
+    leaders_line = ""
+    if leaders:
+        items = "  ".join(
+            f"{i+1}위 {l['name']} {'+' if l['rate']>=0 else ''}{l['rate']:.1f}%"
+            for i, l in enumerate(leaders)
+        )
+        leaders_line = f"\n📌 전일 주도주\n{items}\n"
+
+    # 공시
     disc_lines = ""
     if disclosures:
         items = "\n".join(f"• {d['corp_name']} - {d['report_nm']}" for d in disclosures)
-        disc_lines = f"\n📋 주요 공시\n{items}\n"
+        disc_lines = f"\n📋 당일 공시 (관심 종목)\n{items}\n"
 
     # AI 뷰
     view_section = f"\n━━━━━━━━━━━━━━━━━━━━\n{ai_view}\n" if ai_view else ""
@@ -219,6 +389,9 @@ def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime) -> 
         f"{line('달러/원', krw, '{:,.0f}원')}\n"
         f"{line('WTI', wti, '${:.1f}')}\n"
         f"{line('금', gld, '${:,.0f}')}\n"
+        f"{futures_line}"
+        f"{investor_line}"
+        f"{leaders_line}"
         f"{disc_lines}"
         f"{view_section}"
         f"\n"
@@ -252,9 +425,14 @@ def run():
     print(f"{'='*50}")
 
     mkt         = get_market_data()
+    futures     = get_kospi_futures()
+    if futures:
+        mkt["futures"] = futures
+    investor    = get_market_investor()
+    leaders     = get_prev_leaders()
     disclosures = get_dart_disclosures()
     ai_view     = get_ai_view(mkt, disclosures)
-    msg         = build_message(mkt, disclosures, ai_view, now)
+    msg         = build_message(mkt, disclosures, ai_view, now, investor, leaders)
 
     tg_send(msg)
     print("  발송 완료")
