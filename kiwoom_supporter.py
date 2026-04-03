@@ -31,7 +31,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 KIS_APP_KEY        = os.getenv("KIS_APP_KEY")
 KIS_APP_SECRET     = os.getenv("KIS_APP_SECRET")
-ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY  = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
 KIS_BASE_URL       = "https://openapi.koreainvestment.com:9443"
 
 # ── 배치 설정 ─────────────────────────────────────────────────────
