@@ -401,7 +401,7 @@ def fmt_vol(v: int) -> str:
 def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None) -> tuple:
     """Claude API로 코멘트 + 토론 질문 생성. 실패 시 룰 기반 폴백."""
     if not ANTHROPIC_API_KEY:
-        return _fallback_comment(info, batch), _fallback_discussion(info, inv)
+        return _fallback_comment(info, batch), ""
 
     name        = info["name"]
     price       = info["price"]
@@ -433,9 +433,8 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
         f"{frgn_str} / {orgn_str}\n"
         f"기술지표: {ta_str if ta_str else '없음'}\n"
         f"시간대: {batch_label}\n\n"
-        f"아래 두 줄만 출력하세요 (다른 설명 없이):\n"
-        f"[VIEW] 기술지표 기반 판단 2~3문장 (MA 위치·RSI·거래량배율 근거 포함, 매번 다르게, 단정적으로)\n"
-        f"[QUESTION] 댓글 유도 질문 한 줄 (40자 이내, 구체적 수치 포함, 끝에 👇)"
+        f"아래 한 블록만 출력하세요 (다른 설명 없이):\n"
+        f"[VIEW] 기술지표 기반 판단 2~3문장 (MA 위치·RSI·거래량배율 근거 포함, 매번 다르게, 단정적으로, 질문 형식 금지)"
     )
 
     try:
@@ -469,13 +468,13 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
                 view = " ".join(view_lines).strip()
             elif line.startswith("[QUESTION]"):
                 question = line.replace("[QUESTION]", "").strip()
-        if view and question:
+        if view:
             print(f"  AI 뷰 완료: {view[:20]}...")
-            return view, question
+            return view, ""
     except Exception as e:
         print(f"  AI 멘트 실패 ({e}), 폴백 사용")
 
-    return _fallback_comment(info, batch), _fallback_discussion(info, inv)
+    return _fallback_comment(info, batch), ""
 
 
 def _fallback_comment(info: dict, batch: str) -> str:
@@ -551,7 +550,10 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
         inv_lines = f"외국인    {frgn_str}\n기관      {orgn_str}\n"
 
     ta_line    = fmt_ta_line(ta) + "\n" if ta else ""
-    follow_line = "매일 10:30 / 14:00 / 15:30 거래대금 상위 종목 실시간 업데이트 중 📊 팔로우하시면 수급 동향 빠르게 받아보실 수 있습니다!"
+    follow_line = (
+        "📊 매일 10:30 / 14:00 / 15:30 거래대금 상위 종목 실시간 업데이트합니다.\n"
+        "팔로우하고 정보 얻어가세요! 원하는 종목이나 지표 있으면 댓글로 알려주세요 🙌"
+    )
 
     return (
         f"{icon} {name}  {time_str} 현재\n"
@@ -565,8 +567,6 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
         f"{comment}\n"
         f"\n"
         f"{follow_line}\n"
-        f"\n"
-        f"{question}\n"
         f"\n"
         f"{macro_line}"
         f"#{name} #장중정보 #거래대금상위"
