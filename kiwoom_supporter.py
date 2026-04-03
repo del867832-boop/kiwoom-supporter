@@ -35,9 +35,9 @@ KIS_BASE_URL       = "https://openapi.koreainvestment.com:9443"
 
 # ── 배치 설정 ─────────────────────────────────────────────────────
 BATCH_SIZE = {
-    "midday":    4,   # 10:30
-    "afternoon": 3,   # 14:00
-    "close":     3,   # 15:30
+    "midday":    10,  # 10:30
+    "afternoon": 10,  # 14:00
+    "close":     10,  # 15:30
 }
 
 BATCH_LABEL = {
@@ -124,6 +124,35 @@ def get_top_stocks(n: int) -> list:
     return stocks
 
 
+# ── 외국인/기관 수급 ──────────────────────────────────────────────
+
+def get_investor_data(ticker: str) -> dict:
+    """외국인·기관 당일 순매수량 조회"""
+    token = get_token()
+    url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
+    headers = {
+        "content-type": "application/json",
+        "authorization": f"Bearer {token}",
+        "appkey":    KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id":     "FHKST01010900",
+    }
+    params = {
+        "fid_cond_mrkt_div_code": "J",
+        "fid_input_iscd":         ticker,
+    }
+    res  = requests.get(url, headers=headers, params=params, timeout=10)
+    data = res.json()
+    rows = data.get("output", [])
+    if not rows:
+        return {"frgn": 0, "orgn": 0}
+    today = rows[0]
+    return {
+        "frgn": int(today.get("frgn_ntby_qty", 0)),   # 외국인 순매수량
+        "orgn": int(today.get("orgn_ntby_qty", 0)),    # 기관 순매수량
+    }
+
+
 # ── 유가 / 환율 ───────────────────────────────────────────────────
 
 def get_macro() -> dict:
@@ -179,15 +208,36 @@ def get_comment(info: dict, batch: str) -> str:
     return " · ".join(parts) if parts else "장중 모니터링 중"
 
 
+def get_discussion(info: dict, inv: dict) -> str:
+    """데이터 기반 토론 유도 질문 생성"""
+    rate = info["change_rate"]
+    frgn = inv.get("frgn", 0)
+    orgn = inv.get("orgn", 0)
+
+    if frgn > 200000 and rate > 0:
+        return f"외국인이 오늘 {fmt_vol(frgn)} 순매수 중인데, 같이 따라가는 게 맞을까요? 의견 주세요 👇"
+    if frgn < -200000 and rate < 0:
+        return f"외국인이 {fmt_vol(abs(frgn))} 빠지는 구간입니다. 저점 매수 타이밍으로 보시나요, 아니면 관망? 👇"
+    if orgn > 100000 and frgn > 0:
+        return f"외국인·기관 동시 매수 중입니다. 이 구간에서 어떻게 대응하고 계세요? 👇"
+    if rate >= 3:
+        return f"+{rate:.1f}% 강세인데 추격 매수 vs 눌림목 대기, 어떻게 보세요? 👇"
+    if rate <= -3:
+        return f"{rate:.1f}% 하락 중입니다. 손절 vs 물타기 vs 관망, 의견 나눠요 👇"
+    if rate > 0:
+        return f"오늘 상승 중인데 끝까지 들고 갈 건지 익절 타이밍 고민되시는 분 있으세요? 👇"
+    return f"지금 이 종목 어떻게 보고 계세요? 매수·홀딩·관망 의견 주세요 👇"
+
+
 # ── 포스트 빌드 ───────────────────────────────────────────────────
 
-def build_post(info: dict, batch: str, rank: int, now: datetime, macro: dict = None) -> str:
+def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macro: dict = None) -> str:
     name     = info["name"]
-    ticker   = info["ticker"]
     arrow    = "▲" if info["change_rate"] > 0 else ("▼" if info["change_rate"] < 0 else "─")
     sign     = "+" if info["change_rate"] > 0 else ""
     icon     = "📈" if info["change_rate"] >= 0 else "📉"
     comment  = get_comment(info, batch)
+    question = get_discussion(info, inv)
     time_str = now.strftime("%H:%M")
 
     macro_line = ""
@@ -198,6 +248,11 @@ def build_post(info: dict, batch: str, rank: int, now: datetime, macro: dict = N
         if parts:
             macro_line = "  /  ".join(parts) + "\n"
 
+    frgn = inv.get("frgn", 0)
+    orgn = inv.get("orgn", 0)
+    frgn_str = f"{'▲' if frgn>=0 else '▼'} {fmt_vol(abs(frgn))}" if frgn != 0 else "─"
+    orgn_str = f"{'▲' if orgn>=0 else '▼'} {fmt_vol(abs(orgn))}" if orgn != 0 else "─"
+
     return (
         f"{icon} {name}  거래대금 {rank}위  {time_str}\n"
         f"\n"
@@ -205,10 +260,14 @@ def build_post(info: dict, batch: str, rank: int, now: datetime, macro: dict = N
         f"거래대금  {fmt_value(info['tr_value'])}\n"
         f"거래량    {fmt_vol(info['volume'])}\n"
         f"{macro_line}"
+        f"외국인    {frgn_str}\n"
+        f"기관      {orgn_str}\n"
         f"\n"
         f"{comment}\n"
         f"\n"
-        f"#{name} #키움 #장중정보 #거래대금상위"
+        f"{question}\n"
+        f"\n"
+        f"#{name} #장중정보 #거래대금상위"
     )
 
 
@@ -226,12 +285,20 @@ def tg_send(text: str):
         print(f"  텔레그램 오류: {e}")
 
 
+# ── 팔로우 유도 문구 ──────────────────────────────────────────────
+
+FOLLOW_MSG = (
+    "매일 10:30 / 14:00 / 15:30 장중 거래대금 상위 종목 실시간 정보 올리고 있어요 📊\n"
+    "팔로우하시면 수급·외국인 동향 빠르게 받아보실 수 있습니다!"
+)
+
+
 # ── 배치 실행 ─────────────────────────────────────────────────────
 
 def run_batch(batch: str):
     now   = datetime.now(KST)
     label = BATCH_LABEL.get(batch, batch)
-    n     = BATCH_SIZE.get(batch, 3)
+    n     = BATCH_SIZE.get(batch, 10)
 
     print(f"\n{'='*50}")
     print(f"  키움 서포터즈  {now.strftime('%Y-%m-%d %H:%M')} KST  {label}")
@@ -243,9 +310,12 @@ def run_batch(batch: str):
     usd_str = f"달러  {macro['usdkrw']:,}원" if macro.get("usdkrw") else ""
     macro_line = "  /  ".join(filter(None, [oil_str, usd_str]))
 
-    header = f"📊 키움 서포터즈  {now.strftime('%m/%d %H:%M')} KST  {label}"
-    if macro_line:
-        header += f"\n{macro_line}"
+    # 세션 헤더 + 팔로우 유도
+    header = (
+        f"📊 {now.strftime('%m/%d %H:%M')} KST  {label}\n"
+        f"{macro_line + chr(10) if macro_line else ''}"
+        f"\n{FOLLOW_MSG}"
+    )
     tg_send(header)
     time.sleep(0.3)
 
@@ -259,13 +329,23 @@ def run_batch(batch: str):
         return
 
     for rank, stock in enumerate(stocks, start=1):
+        name = stock.get("name", "?")
         try:
-            post = build_post(stock, batch, rank, now, macro)
-            print(f"  ✅ [{rank}위] {stock['name']}  {stock['price']:,}원  {stock['change_rate']:+.2f}%")
+            # 외국인·기관 수급 조회
+            inv = get_investor_data(stock["ticker"])
+            time.sleep(0.2)
+
+            title = f"[{rank}위] {name} 거래대금 {rank}위  {now.strftime('%H:%M')} 장중"
+            body  = build_post(stock, inv, batch, rank, now, macro)
+
+            # 제목 / 본문 따로 전송
+            tg_send(f"📌 제목\n{title}")
+            time.sleep(0.2)
+            tg_send(f"📝 본문\n{body}")
+            print(f"  ✅ [{rank}위] {name}  {stock['price']:,}원  {stock['change_rate']:+.2f}%")
         except Exception as e:
-            print(f"  ⚠️  {stock.get('name','?')} 오류: {e}")
-            post = f"📊 {stock.get('name','?')}  {now.strftime('%H:%M')}\n\n데이터 오류\n\n#장중정보"
-        tg_send(post)
+            print(f"  ⚠️  {name} 오류: {e}")
+            tg_send(f"📊 {name}  {now.strftime('%H:%M')}\n\n데이터 오류")
         time.sleep(0.5)
 
     print(f"  완료 ({n}개 전송)")
