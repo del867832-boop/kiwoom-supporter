@@ -25,16 +25,20 @@ ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 # ── Stooq 데이터 조회 ─────────────────────────────────────────────
 
 def get_stooq(symbol: str) -> dict:
-    """Stooq에서 최근 2일 일봉 → 현재가 + 전일대비(%) 계산"""
+    """Stooq 현재가 + 전일 종가(Prev) → 변화율 계산"""
     try:
-        url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
+        url = f"https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcvp&h&e=csv"
         res = requests.get(url, timeout=10,
                            headers={"User-Agent": "Mozilla/5.0"})
         rows = list(csv.DictReader(io.StringIO(res.text)))
-        if len(rows) < 2:
+        if not rows:
             return {}
-        prev  = float(rows[-2]["Close"])
-        close = float(rows[-1]["Close"])
+        row   = rows[0]
+        close = row.get("Close", "N/D")
+        prev  = row.get("Prev",  "N/D")
+        if not close or not prev or close == "N/D" or prev == "N/D":
+            return {}
+        close, prev = float(close), float(prev)
         return {
             "close":      close,
             "change_pct": (close - prev) / prev * 100,
@@ -50,7 +54,7 @@ def get_market_data() -> dict:
         "sp500":  "^spx",
         "nasdaq": "^ndx",
         "dow":    "^dji",
-        "sox":    "^sox",    # 필라델피아 반도체
+        "sox":    "smh.us",  # 필라델피아 반도체 ETF (SOX 대용)
         "wti":    "cl.f",
         "gold":   "xauusd",
         "usdkrw": "usdkrw",
@@ -191,7 +195,7 @@ def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime) -> 
         f"{line('S&P500', sp)}\n"
         f"{line('나스닥100', ndx)}\n"
         f"{line('다우', dow)}\n"
-        f"{line('필라델피아반도체', sox)}\n"
+        f"{line('반도체ETF(SMH)', sox)}\n"
         f"\n"
         f"💵 환율 · 원자재\n"
         f"{line('달러/원', krw, '{:,.0f}원')}\n"
