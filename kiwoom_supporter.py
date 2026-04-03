@@ -210,15 +210,26 @@ def get_investor_data(ticker: str) -> dict:
         }
         res  = requests.get(url, headers=headers, params=params, timeout=10)
         data = res.json()
-        rows = data.get("output", [])
-        if not rows:
-            return {"frgn": 0, "orgn": 0}
-        today = rows[0]
-        return {
-            "frgn": int(today.get("frgn_ntby_qty") or 0),
-            "orgn": int(today.get("orgn_ntby_qty") or 0),
-        }
-    except Exception:
+        print(f"  investor rt_cd={data.get('rt_cd')} keys={list(data.keys())}")
+
+        # output 또는 output1 시도
+        rows = data.get("output1") or data.get("output") or []
+        if rows and isinstance(rows, list):
+            today = rows[0]
+            print(f"  investor fields: {list(today.keys())[:8]}")
+            return {
+                "frgn": int(today.get("frgn_ntby_qty") or today.get("frgn_ntby_tr_pbmn") or 0),
+                "orgn": int(today.get("orgn_ntby_qty") or today.get("orgn_ntby_tr_pbmn") or 0),
+            }
+        elif isinstance(rows, dict):
+            print(f"  investor fields: {list(rows.keys())[:8]}")
+            return {
+                "frgn": int(rows.get("frgn_ntby_qty") or 0),
+                "orgn": int(rows.get("orgn_ntby_qty") or 0),
+            }
+        return {"frgn": 0, "orgn": 0}
+    except Exception as e:
+        print(f"  investor 오류: {e}")
         return {"frgn": 0, "orgn": 0}
 
 
