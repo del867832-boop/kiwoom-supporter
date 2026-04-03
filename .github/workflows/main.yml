@@ -18,11 +18,12 @@ jobs:
         with:
           python-version: '3.11'
       - name: install-packages
-        run: pip install requests python-dotenv schedule yfinance
+        run: pip install requests python-dotenv schedule yfinance anthropic
       - name: run-script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python kiwoom_supporter.py --now

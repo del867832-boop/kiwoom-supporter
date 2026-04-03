@@ -31,6 +31,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 KIS_APP_KEY        = os.getenv("KIS_APP_KEY")
 KIS_APP_SECRET     = os.getenv("KIS_APP_SECRET")
+ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 KIS_BASE_URL       = "https://openapi.koreainvestment.com:9443"
 
 # ── 배치 설정 ─────────────────────────────────────────────────────
@@ -280,6 +281,61 @@ def fmt_vol(v: int) -> str:
     return f"{v:,}주"
 
 
+# ── Claude API 동적 멘트 생성 ─────────────────────────────────────
+
+def generate_claude_content(info: dict, inv: dict, batch: str) -> tuple:
+    """Claude API로 코멘트 + 토론 질문 생성. 실패 시 (None, None) 반환."""
+    if not ANTHROPIC_API_KEY:
+        return None, None
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        batch_label = {
+            "midday":    "오전 10시 30분",
+            "afternoon": "오후 2시",
+            "close":     "오후 3시 30분 (마감 직전)",
+        }.get(batch, batch)
+
+        frgn = inv.get("frgn", 0)
+        orgn = inv.get("orgn", 0)
+        frgn_desc = f"외국인 {'순매수' if frgn >= 0 else '순매도'} {abs(frgn):,}주" if frgn != 0 else "외국인 데이터 없음"
+        orgn_desc = f"기관 {'순매수' if orgn >= 0 else '순매도'} {abs(orgn):,}주" if orgn != 0 else "기관 데이터 없음"
+
+        prompt = (
+            f"주식 커뮤니티 포스팅용 짧은 글을 써주세요.\n\n"
+            f"종목: {info['name']}\n"
+            f"등락률: {info['change_rate']:+.2f}%\n"
+            f"거래대금: {fmt_value(info['tr_value'])}\n"
+            f"{frgn_desc}, {orgn_desc}\n"
+            f"시간대: {batch_label}\n\n"
+            f"아래 두 줄만 출력하세요 (다른 설명 없이):\n"
+            f"코멘트: (현재 시황 한 줄, 20자 이내, 매번 다른 표현)\n"
+            f"토론: (댓글 유도 질문 한 줄, 30자 이내, 매수/매도/전략 관련, 끝에 👇)"
+        )
+
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        text = msg.content[0].text.strip()
+        comment_out = None
+        question_out = None
+        for line in text.splitlines():
+            if line.startswith("코멘트:"):
+                comment_out = line[4:].strip()
+            elif line.startswith("토론:"):
+                question_out = line[3:].strip()
+
+        return comment_out, question_out
+
+    except Exception as e:
+        print(f"  Claude API 오류: {e}")
+        return None, None
+
+
 # ── 한줄 코멘트 ───────────────────────────────────────────────────
 
 def get_comment(info: dict, batch: str) -> str:
@@ -332,8 +388,9 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macr
     arrow    = "▲" if info["change_rate"] > 0 else ("▼" if info["change_rate"] < 0 else "─")
     sign     = "+" if info["change_rate"] > 0 else ""
     icon     = "📈" if info["change_rate"] >= 0 else "📉"
-    comment  = get_comment(info, batch)
-    question = get_discussion(info, inv)
+    ai_comment, ai_question = generate_claude_content(info, inv, batch)
+    comment  = ai_comment  or get_comment(info, batch)
+    question = ai_question or get_discussion(info, inv)
     time_str = now.strftime("%H:%M")
 
     macro_line = ""
