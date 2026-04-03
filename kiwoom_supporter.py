@@ -74,54 +74,116 @@ def get_token() -> str:
     return _token_cache["token"]
 
 
-def get_top_stocks(n: int) -> list:
-    """거래대금 상위 n개 종목 조회"""
+# 거래대금 상위 API 실패 시 사용할 대체 종목
+FALLBACK_STOCKS = [
+    {"ticker": "005930", "name": "삼성전자"},
+    {"ticker": "000660", "name": "SK하이닉스"},
+    {"ticker": "005380", "name": "현대차"},
+    {"ticker": "000270", "name": "기아"},
+    {"ticker": "035420", "name": "NAVER"},
+    {"ticker": "373220", "name": "LG에너지솔루션"},
+    {"ticker": "207940", "name": "삼성바이오로직스"},
+    {"ticker": "105560", "name": "KB금융"},
+    {"ticker": "055550", "name": "신한지주"},
+    {"ticker": "051910", "name": "LG화학"},
+]
+
+
+def get_stock_info(ticker: str, name: str = "") -> dict:
+    """개별 종목 현재가 상세 조회"""
     token = get_token()
-    url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank"
+    url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
     headers = {
         "content-type": "application/json",
         "authorization": f"Bearer {token}",
         "appkey":    KIS_APP_KEY,
         "appsecret": KIS_APP_SECRET,
-        "tr_id":     "FHPST01710000",
-        "custtype":  "P",
+        "tr_id":     "FHKST01010100",
     }
-    params = {
-        "FID_COND_MRK_DIV_CODE":   "J",
-        "FID_COND_SCR_DIV_CODE":   "20171",
-        "FID_INPUT_ISCD":          "0000",
-        "FID_DIV_CLS_CODE":        "0",
-        "FID_BLNG_CLS_CODE":       "0",
-        "FID_TRGT_CLS_CODE":       "111111111",
-        "FID_TRGT_EXLS_CLS_CODE":  "000000",
-        "FID_INPUT_PRICE_1":       "",
-        "FID_INPUT_PRICE_2":       "",
-        "FID_VOL_CNT":             "",
-        "FID_INPUT_DATE_1":        "",
+    params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}
+    res = requests.get(url, headers=headers, params=params, timeout=10)
+    out = res.json().get("output", {})
+    return {
+        "ticker":      ticker,
+        "name":        out.get("hts_kor_isnm", name),
+        "price":       int(out.get("stck_prpr",    0)),
+        "change":      int(out.get("prdy_vrss",    0)),
+        "change_rate": float(out.get("prdy_ctrt",  0)),
+        "volume":      int(out.get("acml_vol",     0)),
+        "tr_value":    int(out.get("acml_tr_pbmn", 0)),
+        "open":        int(out.get("stck_oprc",    0)),
+        "high":        int(out.get("stck_hgpr",    0)),
+        "low":         int(out.get("stck_lwpr",    0)),
+        "w52_high":    int(out.get("w52_hgpr",     0)),
+        "w52_low":     int(out.get("w52_lwpr",     0)),
     }
-    res  = requests.get(url, headers=headers, params=params, timeout=10)
-    data = res.json()
 
-    stocks = []
-    for item in data.get("output", [])[:n]:
-        try:
-            stocks.append({
-                "ticker":      item.get("mksc_shrn_iscd", ""),
-                "name":        item.get("hts_kor_isnm", ""),
-                "price":       int(item.get("stck_prpr",   0)),
-                "change":      int(item.get("prdy_vrss",   0)),
-                "change_rate": float(item.get("prdy_ctrt", 0)),
-                "volume":      int(item.get("acml_vol",    0)),
-                "tr_value":    int(item.get("acml_tr_pbmn",0)),
-                "open":        int(item.get("stck_oprc",   0)),
-                "high":        int(item.get("stck_hgpr",   0)),
-                "low":         int(item.get("stck_lwpr",   0)),
-                "w52_high":    0,
-                "w52_low":     0,
-            })
-        except Exception:
-            continue
-    return stocks
+
+def get_top_stocks(n: int) -> list:
+    """거래대금 상위 n개 종목 조회. 실패 시 fallback 사용."""
+    try:
+        token = get_token()
+        url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank"
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {token}",
+            "appkey":    KIS_APP_KEY,
+            "appsecret": KIS_APP_SECRET,
+            "tr_id":     "FHPST01710000",
+            "custtype":  "P",
+        }
+        params = {
+            "FID_COND_MRK_DIV_CODE":   "J",
+            "FID_COND_SCR_DIV_CODE":   "20171",
+            "FID_INPUT_ISCD":          "0000",
+            "FID_DIV_CLS_CODE":        "0",
+            "FID_BLNG_CLS_CODE":       "0",
+            "FID_TRGT_CLS_CODE":       "111111111",
+            "FID_TRGT_EXLS_CLS_CODE":  "000000",
+            "FID_INPUT_PRICE_1":       "",
+            "FID_INPUT_PRICE_2":       "",
+            "FID_VOL_CNT":             "",
+            "FID_INPUT_DATE_1":        "",
+        }
+        res  = requests.get(url, headers=headers, params=params, timeout=10)
+        data = res.json()
+        print(f"  volume-rank 응답: rt_cd={data.get('rt_cd')} msg={data.get('msg1','')}")
+
+        stocks = []
+        for item in data.get("output", [])[:n]:
+            try:
+                stocks.append({
+                    "ticker":      item.get("mksc_shrn_iscd", ""),
+                    "name":        item.get("hts_kor_isnm", ""),
+                    "price":       int(item.get("stck_prpr",    0)),
+                    "change":      int(item.get("prdy_vrss",    0)),
+                    "change_rate": float(item.get("prdy_ctrt",  0)),
+                    "volume":      int(item.get("acml_vol",     0)),
+                    "tr_value":    int(item.get("acml_tr_pbmn", 0)),
+                    "open":        int(item.get("stck_oprc",    0)),
+                    "high":        int(item.get("stck_hgpr",    0)),
+                    "low":         int(item.get("stck_lwpr",    0)),
+                    "w52_high":    0,
+                    "w52_low":     0,
+                })
+            except Exception:
+                continue
+
+        if stocks:
+            return stocks
+        raise Exception("output 비어있음")
+
+    except Exception as e:
+        print(f"  ⚠️ volume-rank 실패 ({e}), fallback 종목으로 대체")
+        result = []
+        for s in FALLBACK_STOCKS[:n]:
+            try:
+                info = get_stock_info(s["ticker"], s["name"])
+                result.append(info)
+                time.sleep(0.2)
+            except Exception:
+                continue
+        return result
 
 
 # ── 외국인/기관 수급 ──────────────────────────────────────────────
