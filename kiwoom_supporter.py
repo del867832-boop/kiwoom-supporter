@@ -207,6 +207,7 @@ def get_top_stocks(n: int) -> list:
 
 def get_investor_data(ticker: str) -> dict:
     """외국인·기관 당일 순매수량 조회 (실패 시 0 반환)"""
+    import sys
     try:
         token = get_token()
         url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
@@ -223,26 +224,22 @@ def get_investor_data(ticker: str) -> dict:
         }
         res  = requests.get(url, headers=headers, params=params, timeout=10)
         data = res.json()
-        print(f"  investor rt_cd={data.get('rt_cd')} keys={list(data.keys())}")
+        msg  = f"  investor {ticker} rt_cd={data.get('rt_cd')} keys={list(data.keys())}"
+        print(msg); sys.stdout.flush()
 
-        # output 또는 output1 시도
-        rows = data.get("output1") or data.get("output") or []
-        if rows and isinstance(rows, list):
-            today = rows[0]
-            print(f"  investor fields: {list(today.keys())[:8]}")
-            return {
-                "frgn": int(today.get("frgn_ntby_qty") or today.get("frgn_ntby_tr_pbmn") or 0),
-                "orgn": int(today.get("orgn_ntby_qty") or today.get("orgn_ntby_tr_pbmn") or 0),
-            }
-        elif isinstance(rows, dict):
-            print(f"  investor fields: {list(rows.keys())[:8]}")
-            return {
-                "frgn": int(rows.get("frgn_ntby_qty") or 0),
-                "orgn": int(rows.get("orgn_ntby_qty") or 0),
-            }
+        for key in ("output", "output1", "output2"):
+            rows = data.get(key)
+            if not rows:
+                continue
+            row = rows[0] if isinstance(rows, list) else rows
+            print(f"  investor fields({key}): {list(row.keys())[:10]}"); sys.stdout.flush()
+            frgn = int(row.get("frgn_ntby_qty") or row.get("frgn_ntby_tr_pbmn") or 0)
+            orgn = int(row.get("orgn_ntby_qty") or row.get("orgn_ntby_tr_pbmn") or 0)
+            return {"frgn": frgn, "orgn": orgn}
+
         return {"frgn": 0, "orgn": 0}
     except Exception as e:
-        print(f"  investor 오류: {e}")
+        print(f"  investor 오류: {e}"); sys.stdout.flush()
         return {"frgn": 0, "orgn": 0}
 
 
@@ -346,14 +343,17 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime, macr
     frgn_str = f"{'▲' if frgn>=0 else '▼'} {fmt_vol(abs(frgn))}" if frgn != 0 else "─"
     orgn_str = f"{'▲' if orgn>=0 else '▼'} {fmt_vol(abs(orgn))}" if orgn != 0 else "─"
 
+    inv_lines = ""
+    if frgn != 0 or orgn != 0:
+        inv_lines = f"외국인    {frgn_str}\n기관      {orgn_str}\n"
+
     return (
         f"{icon} {name}  {time_str} 현재\n"
         f"\n"
         f"현재가    {fmt_price(info['price'])}  {arrow} {sign}{info['change_rate']:.2f}%\n"
         f"거래대금  {fmt_value(info['tr_value'])}\n"
         f"거래량    {fmt_vol(info['volume'])}\n"
-        f"외국인    {frgn_str}\n"
-        f"기관      {orgn_str}\n"
+        f"{inv_lines}"
         f"\n"
         f"{comment}\n"
         f"\n"
