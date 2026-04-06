@@ -1,8 +1,6 @@
 name: 장전 시황 브리핑
 
 on:
-  schedule:
-    - cron: '50 22 * * 0-4'   # 07:50 KST (월~금)
   workflow_dispatch:
 
 env:
