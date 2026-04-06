@@ -423,15 +423,24 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
     frgn_str = f"외국인 {'+' if frgn>=0 else ''}{frgn//10000}만주" if frgn != 0 else "외국인 데이터 없음"
     orgn_str = f"기관 {'+' if orgn>=0 else ''}{orgn//10000}만주"   if orgn != 0 else "기관 데이터 없음"
 
-    ta_str = ""
+    ta_parts = []
     if ta:
-        ta_parts = []
         if "above_ma20" in ta: ta_parts.append(f"MA20 {'위' if ta['above_ma20'] else '아래'}")
         if "above_ma60" in ta: ta_parts.append(f"MA60 {'위' if ta['above_ma60'] else '아래'}")
         if "cross"      in ta: ta_parts.append(ta["cross"])
         if "rsi"        in ta: ta_parts.append(f"RSI {ta['rsi']}({ta['rsi_label']})")
         if "vol_ratio"  in ta: ta_parts.append(f"거래량 평균比 {ta['vol_ratio']}배")
-        ta_str = " / ".join(ta_parts)
+
+    # 52주 신고가 여부
+    w52_high = info.get("w52_high", 0)
+    if w52_high > 0 and info["price"] > 0:
+        ratio = info["price"] / w52_high * 100
+        if ratio >= 99:
+            ta_parts.insert(0, "52주 신고가")
+        elif ratio >= 95:
+            ta_parts.insert(0, f"52주 신고가 근접({ratio:.0f}%)")
+
+    ta_str = " / ".join(ta_parts)
 
     prompt = (
         f"당신은 15년 경력의 주식 애널리스트입니다. 아래 데이터를 보고 시황 분석 코멘트를 작성하세요.\n\n"
@@ -563,7 +572,17 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
     if frgn != 0 or orgn != 0:
         inv_lines = f"외국인    {frgn_str}\n기관      {orgn_str}\n"
 
-    ta_line    = fmt_ta_line(ta) + "\n" if ta else ""
+    # 52주 신고가 배지
+    w52_high = info.get("w52_high", 0)
+    w52_badge = ""
+    if w52_high > 0 and info["price"] > 0:
+        ratio = info["price"] / w52_high * 100
+        if ratio >= 99:
+            w52_badge = "🔥 52주 신고가\n"
+        elif ratio >= 95:
+            w52_badge = f"📈 52주 신고가 근접({ratio:.0f}%)\n"
+
+    ta_line = fmt_ta_line(ta) + "\n" if ta else ""
     follow_line = (
         "📊 매일 10:30 / 14:00 / 15:30 거래대금 상위 종목 실시간 업데이트합니다.\n"
         "팔로우하고 정보 얻어가세요! 원하는 종목이나 지표 있으면 댓글로 알려주세요 🙌"
@@ -576,6 +595,7 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
         f"거래대금  {fmt_value(info['tr_value'])}\n"
         f"거래량    {fmt_vol(info['volume'])}\n"
         f"{inv_lines}"
+        f"{w52_badge}"
         f"{ta_line}"
         f"\n"
         f"{comment}\n"

@@ -399,8 +399,26 @@ def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime,
             rows_txt.append(
                 f"{label}  외인{frgn_bar}{fmt_money(d['frgn'])}  기관{orgn_bar}{fmt_money(d['orgn'])}"
             )
+        # 연속 순매수 일수 계산 (삼성전자+하이닉스 합산 기준)
+        consec_buy = consec_sell = 0
+        for d in investor_trend:
+            if d["frgn"] > 0:
+                consec_buy  += 1
+                consec_sell  = 0
+            else:
+                consec_sell += 1
+                consec_buy   = 0
+
+        if consec_buy >= 2:
+            consec_badge = f"🔥 외인 {consec_buy}일 연속 순매수\n"
+        elif consec_sell >= 2:
+            consec_badge = f"⚠️ 외인 {consec_sell}일 연속 순매도\n"
+        else:
+            consec_badge = ""
+
         investor_line = (
-            f"\n💰 수급 동향 7일 (삼성전자+하이닉스, 백만원)\n"
+            f"\n💰 수급 동향 7일 (삼성전자+하이닉스)\n"
+            f"{consec_badge}"
             + "\n".join(rows_txt) + "\n"
         )
 

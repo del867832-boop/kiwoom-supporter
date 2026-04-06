@@ -20,6 +20,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 KIS_APP_KEY        = os.getenv("KIS_APP_KEY")
 KIS_APP_SECRET     = os.getenv("KIS_APP_SECRET")
+DART_API_KEY       = os.getenv("DART_API_KEY")
+ANTHROPIC_API_KEY  = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
 KIS_BASE_URL       = "https://openapi.koreainvestment.com:9443"
 
 LOOKBACK_MIN = 32   # 30분 실행 간격 + 2분 여유
@@ -149,6 +151,73 @@ def get_filtered_news(stock_name: str, seen_urls: set) -> list:
         return []
 
 
+# ── DART 공시 즉시 분석 ───────────────────────────────────────────
+
+def get_dart_alerts(stock_names: list, seen_dart: set) -> list:
+    """당일 공시 중 모니터링 종목 + Claude 한 줄 분석"""
+    if not DART_API_KEY:
+        return []
+    results = []
+    try:
+        today = datetime.now(KST).strftime("%Y%m%d")
+        res   = requests.get(
+            "https://opendart.fss.or.kr/api/list.json",
+            params={
+                "crtfc_key":  DART_API_KEY,
+                "bgn_de":     today,
+                "end_de":     today,
+                "pblntf_ty":  "B",   # 주요사항보고
+                "page_count": 100,
+            },
+            timeout=10,
+        )
+        items = res.json().get("list", []) if res.json().get("status") == "000" else []
+        for item in items:
+            corp  = item.get("corp_name", "")
+            title = item.get("report_nm", "")
+            key   = item.get("rcept_no", "")
+            if key in seen_dart:
+                continue
+            if not any(s in corp for s in stock_names):
+                continue
+            seen_dart.add(key)
+
+            # Claude 한 줄 분석
+            analysis = ""
+            if ANTHROPIC_API_KEY:
+                try:
+                    prompt = (
+                        f"종목: {corp}\n공시 제목: {title}\n\n"
+                        f"이 공시가 주가에 미칠 영향을 한 문장으로 분석해주세요.\n"
+                        f"규칙: 전문가 격식체, 긍정/부정/중립 판단 포함, 이모지 금지"
+                    )
+                    r = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": ANTHROPIC_API_KEY,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json",
+                        },
+                        json={
+                            "model": "claude-haiku-4-5-20251001",
+                            "max_tokens": 150,
+                            "messages": [{"role": "user", "content": prompt}],
+                        },
+                        timeout=15,
+                    )
+                    analysis = r.json()["content"][0]["text"].strip()
+                except Exception:
+                    pass
+
+            results.append({
+                "corp": corp, "title": title, "analysis": analysis,
+                "link": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={key}",
+            })
+    except Exception as e:
+        print(f"  DART 조회 실패: {e}")
+    return results
+
+
 # ── 텔레그램 발송 ─────────────────────────────────────────────────
 
 def tg_send(text: str):
@@ -179,8 +248,26 @@ def run():
     print(f"  모니터링 종목: {', '.join(stocks)}")
 
     seen_urls = set()
+    seen_dart = set()
     total     = 0
 
+    # DART 공시 즉시 분석
+    dart_alerts = get_dart_alerts(stocks, seen_dart)
+    for alert in dart_alerts:
+        msg = (
+            f"📋 [공시속보] {alert['corp']}\n"
+            f"\n"
+            f"{alert['title']}\n"
+        )
+        if alert["analysis"]:
+            msg += f"\n{alert['analysis']}\n"
+        msg += f"\n{alert['link']}"
+        tg_send(msg)
+        print(f"  📋 공시: [{alert['corp']}] {alert['title'][:35]}...")
+        total += 1
+        time.sleep(0.5)
+
+    # 뉴스 알림
     for stock in stocks:
         articles = get_filtered_news(stock, seen_urls)
         for art in articles:
@@ -200,7 +287,7 @@ def run():
         time.sleep(0.5)
 
     if total == 0:
-        print(f"  최근 {LOOKBACK_MIN}분 내 주요 뉴스 없음")
+        print(f"  최근 {LOOKBACK_MIN}분 내 주요 뉴스/공시 없음")
     else:
         print(f"  완료 ({total}건 발송)")
 
