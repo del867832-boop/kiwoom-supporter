@@ -177,7 +177,7 @@ def get_kospi_futures() -> dict:
 
 
 def get_market_investor() -> dict:
-    """전일 코스피 외국인·기관 순매수 (KODEX200 ETF 069500 기준)"""
+    """전일 코스피 외국인·기관 순매수 (삼성전자+SK하이닉스 합산)"""
     try:
         res = requests.post(
             f"{KIS_BASE_URL}/oauth2/tokenP",
@@ -194,20 +194,29 @@ def get_market_investor() -> dict:
             "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
             "tr_id": "FHKST01010900",
         }
-        res = requests.get(
-            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
-            headers=headers,
-            params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": "069500"},
-            timeout=10,
-        )
-        data = res.json()
-        rows = data.get("output")
-        if not rows:
-            return {}
-        row = rows[0] if isinstance(rows, list) else rows
-        frgn = int(row.get("frgn_ntby_tr_pbmn") or 0)   # 외국인 순매수 거래대금(백만)
-        orgn = int(row.get("orgn_ntby_tr_pbmn") or 0)    # 기관 순매수 거래대금(백만)
-        return {"frgn": frgn, "orgn": orgn}
+        total_frgn, total_orgn = 0, 0
+        found = False
+        for iscd in ("005930", "000660"):   # 삼성전자, SK하이닉스
+            try:
+                r = requests.get(
+                    f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
+                    headers=headers,
+                    params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": iscd},
+                    timeout=10,
+                )
+                rows = r.json().get("output", [])
+                # 당일 row는 장 마감 전 빈값 → 데이터 있는 첫 row(전일) 사용
+                for row in rows:
+                    frgn = row.get("frgn_ntby_tr_pbmn", "")
+                    orgn = row.get("orgn_ntby_tr_pbmn", "")
+                    if frgn and orgn:
+                        total_frgn += int(frgn)
+                        total_orgn += int(orgn)
+                        found = True
+                        break
+            except Exception as e:
+                print(f"  수급 조회 실패 ({iscd}): {e}")
+        return {"frgn": total_frgn, "orgn": total_orgn} if found else {}
     except Exception as e:
         print(f"  수급 조회 실패: {e}")
         return {}
@@ -258,7 +267,7 @@ def get_prev_leaders(n: int = 5) -> list:
         return []
 
 
-def get_ai_view(mkt: dict, disclosures: list) -> str:
+def get_ai_view(mkt: dict, disclosures: list, investor: dict = None) -> str:
     """Claude로 장전 한줄 시황 뷰 생성"""
     if not ANTHROPIC_API_KEY:
         return ""
@@ -270,6 +279,18 @@ def get_ai_view(mkt: dict, disclosures: list) -> str:
             f"- {d['corp_name']}: {d['report_nm']}" for d in disclosures
         ) or "없음"
 
+        inv_text = ""
+        if investor and (investor.get("frgn") or investor.get("orgn")):
+            def m(v):
+                s = "+" if v >= 0 else ""
+                av = abs(v)
+                if av >= 100: return f"{s}{v/100:.0f}억"
+                return f"{s}{v}백만"
+            inv_text = (
+                f"\n전일 수급 (삼성전자+하이닉스):\n"
+                f"외국인 {m(investor['frgn'])} / 기관 {m(investor['orgn'])}\n"
+            )
+
         prompt = (
             f"한국 주식 투자자를 위한 장전 시황 뷰를 3문장으로 작성해주세요.\n\n"
             f"미국 지수 (전일 마감):\n"
@@ -280,8 +301,9 @@ def get_ai_view(mkt: dict, disclosures: list) -> str:
             f"원자재·환율:\n"
             f"WTI ${mkt['wti']['close']:.1f} ({fmt(mkt.get('wti'))}%) / "
             f"금 ${mkt['gold']['close']:.0f} / "
-            f"달러원 {mkt['usdkrw']['close']:.0f}원\n\n"
-            f"오늘 주요 공시:\n{disc_text}\n\n"
+            f"달러원 {mkt['usdkrw']['close']:.0f}원\n"
+            f"{inv_text}"
+            f"\n오늘 주요 공시:\n{disc_text}\n\n"
             f"작성 규칙: 3문장, 전문가 격식체(~입니다/~습니다), 수치 근거 명시, 질문·이모지 금지, 국내 시장 영향 중심"
         )
 
@@ -338,11 +360,12 @@ def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime,
         return f"{label:<16} {p}   {chg}"
 
     def fmt_money(v):
+        # v: 백만원 단위 (1억 = 100백만원, 1조 = 1,000,000백만원)
         sign = "+" if v >= 0 else ""
         if abs(v) >= 1000000:
             return f"{sign}{v/1000000:.1f}조"
-        if abs(v) >= 1000:
-            return f"{sign}{v/1000:.0f}억"
+        if abs(v) >= 100:
+            return f"{sign}{v/100:.0f}억"
         return f"{sign}{v}백만"
 
     # 야간선물
@@ -354,7 +377,7 @@ def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime,
         frgn = investor.get("frgn", 0)
         orgn = investor.get("orgn", 0)
         investor_line = (
-            f"\n💰 전일 수급 (코스피200 ETF 기준)\n"
+            f"\n💰 전일 수급 (삼성전자+하이닉스 합산)\n"
             f"외국인  {fmt_money(frgn)}   기관  {fmt_money(orgn)}\n"
         )
 
@@ -431,7 +454,7 @@ def run():
     investor    = get_market_investor()
     leaders     = get_prev_leaders()
     disclosures = get_dart_disclosures()
-    ai_view     = get_ai_view(mkt, disclosures)
+    ai_view     = get_ai_view(mkt, disclosures, investor)
     msg         = build_message(mkt, disclosures, ai_view, now, investor, leaders)
 
     tg_send(msg)
