@@ -176,8 +176,8 @@ def get_kospi_futures() -> dict:
     return get_stooq("ks200f.f")
 
 
-def get_market_investor() -> dict:
-    """전일 코스피 외국인·기관 순매수 (삼성전자+SK하이닉스 합산)"""
+def get_investor_trend(days: int = 7) -> list:
+    """삼성전자+SK하이닉스 합산 외인·기관 일별 순매수 (최근 days일, 완성 데이터만)"""
     try:
         res = requests.post(
             f"{KIS_BASE_URL}/oauth2/tokenP",
@@ -187,16 +187,16 @@ def get_market_investor() -> dict:
         )
         token = res.json().get("access_token")
         if not token:
-            return {}
+            return []
         headers = {
             "content-type": "application/json",
             "authorization": f"Bearer {token}",
             "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
             "tr_id": "FHKST01010900",
         }
-        total_frgn, total_orgn = 0, 0
-        found = False
-        for iscd in ("005930", "000660"):   # 삼성전자, SK하이닉스
+        # 종목별 날짜 → (frgn, orgn) 누적
+        day_map: dict = {}
+        for iscd in ("005930", "000660"):
             try:
                 r = requests.get(
                     f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
@@ -204,22 +204,29 @@ def get_market_investor() -> dict:
                     params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": iscd},
                     timeout=10,
                 )
-                rows = r.json().get("output", [])
-                # 당일 row는 장 마감 전 빈값 → 데이터 있는 첫 row(전일) 사용
-                for row in rows:
+                for row in r.json().get("output", []):
+                    date = row.get("stck_bsop_date", "")
                     frgn = row.get("frgn_ntby_tr_pbmn", "")
                     orgn = row.get("orgn_ntby_tr_pbmn", "")
-                    if frgn and orgn:
-                        total_frgn += int(frgn)
-                        total_orgn += int(orgn)
-                        found = True
-                        break
+                    if date and frgn and orgn:
+                        prev = day_map.get(date, (0, 0))
+                        day_map[date] = (prev[0] + int(frgn), prev[1] + int(orgn))
             except Exception as e:
                 print(f"  수급 조회 실패 ({iscd}): {e}")
-        return {"frgn": total_frgn, "orgn": total_orgn} if found else {}
+
+        # 날짜 내림차순 정렬 후 최근 days일 반환
+        result = []
+        for date in sorted(day_map.keys(), reverse=True)[:days]:
+            frgn, orgn = day_map[date]
+            result.append({
+                "date": date,                 # YYYYMMDD
+                "frgn": frgn,                 # 백만원 단위
+                "orgn": orgn,
+            })
+        return result
     except Exception as e:
         print(f"  수급 조회 실패: {e}")
-        return {}
+        return []
 
 
 def get_prev_leaders(n: int = 5) -> list:
@@ -267,8 +274,8 @@ def get_prev_leaders(n: int = 5) -> list:
         return []
 
 
-def get_ai_view(mkt: dict, disclosures: list, investor: dict = None) -> str:
-    """Claude로 장전 한줄 시황 뷰 생성"""
+def get_ai_view(mkt: dict, disclosures: list, investor_trend: list = None) -> str:
+    """Claude로 장전 시황 + 수급 트렌드 판단 생성"""
     if not ANTHROPIC_API_KEY:
         return ""
     try:
@@ -280,19 +287,18 @@ def get_ai_view(mkt: dict, disclosures: list, investor: dict = None) -> str:
         ) or "없음"
 
         inv_text = ""
-        if investor and (investor.get("frgn") or investor.get("orgn")):
+        if investor_trend:
             def m(v):
                 s = "+" if v >= 0 else ""
-                av = abs(v)
-                if av >= 100: return f"{s}{v/100:.0f}억"
-                return f"{s}{v}백만"
-            inv_text = (
-                f"\n전일 수급 (삼성전자+하이닉스):\n"
-                f"외국인 {m(investor['frgn'])} / 기관 {m(investor['orgn'])}\n"
-            )
+                return f"{s}{v/100:.0f}억" if abs(v) >= 100 else f"{s}{v}백만"
+            lines = []
+            for d in investor_trend:
+                dt = d["date"]
+                lines.append(f"{dt[4:6]}/{dt[6:8]} 외인{m(d['frgn'])} 기관{m(d['orgn'])}")
+            inv_text = "\n최근 7일 수급 (삼성전자+하이닉스):\n" + "\n".join(lines) + "\n"
 
         prompt = (
-            f"한국 주식 투자자를 위한 장전 시황 뷰를 3문장으로 작성해주세요.\n\n"
+            f"한국 주식 투자자를 위한 장전 시황 브리핑을 4문장으로 작성해주세요.\n\n"
             f"미국 지수 (전일 마감):\n"
             f"S&P500 {fmt(mkt.get('sp500'))}% / "
             f"나스닥 {fmt(mkt.get('nasdaq'))}% / "
@@ -304,7 +310,11 @@ def get_ai_view(mkt: dict, disclosures: list, investor: dict = None) -> str:
             f"달러원 {mkt['usdkrw']['close']:.0f}원\n"
             f"{inv_text}"
             f"\n오늘 주요 공시:\n{disc_text}\n\n"
-            f"작성 규칙: 3문장, 전문가 격식체(~입니다/~습니다), 수치 근거 명시, 질문·이모지 금지, 국내 시장 영향 중심"
+            f"작성 규칙:\n"
+            f"- 4문장 (①미국지수·원자재 요약 ②환율 영향 ③7일 수급 트렌드 판단 ④오늘 장 전망)\n"
+            f"- 전문가 격식체(~입니다/~습니다), 수치 근거 명시\n"
+            f"- 수급 트렌드가 있으면 외인/기관 누적 매수·매도 흐름과 시사점 반드시 포함\n"
+            f"- 질문·이모지 금지"
         )
 
         res = requests.post(
@@ -338,7 +348,7 @@ def fmt_change(d: dict, price_fmt: str = "{:.0f}") -> str:
 
 
 def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime,
-                  investor: dict = None, leaders: list = None) -> str:
+                  investor_trend: list = None, leaders: list = None) -> str:
     date_str = now.strftime("%m/%d (%a)").replace(
         "Mon","월").replace("Tue","화").replace("Wed","수").replace(
         "Thu","목").replace("Fri","금").replace("Sat","토").replace("Sun","일")
@@ -371,14 +381,27 @@ def build_message(mkt: dict, disclosures: list, ai_view: str, now: datetime,
     # 야간선물
     futures_line = f"\n🌙 코스피200 야간선물\n{line('K200 선물', fut)}\n" if fut else ""
 
-    # 전일 수급
+    # 수급 트렌드 (7일)
     investor_line = ""
-    if investor:
-        frgn = investor.get("frgn", 0)
-        orgn = investor.get("orgn", 0)
+    if investor_trend:
+        def fmt_bar(v):
+            # 외인/기관 순매수 방향을 간단한 기호로
+            if v > 0: return "▲"
+            if v < 0: return "▼"
+            return "─"
+
+        rows_txt = []
+        for d in investor_trend:
+            dt = d["date"]
+            label = f"{dt[4:6]}/{dt[6:8]}"
+            frgn_bar = fmt_bar(d["frgn"])
+            orgn_bar = fmt_bar(d["orgn"])
+            rows_txt.append(
+                f"{label}  외인{frgn_bar}{fmt_money(d['frgn'])}  기관{orgn_bar}{fmt_money(d['orgn'])}"
+            )
         investor_line = (
-            f"\n💰 전일 수급 (삼성전자+하이닉스 합산)\n"
-            f"외국인  {fmt_money(frgn)}   기관  {fmt_money(orgn)}\n"
+            f"\n💰 수급 동향 7일 (삼성전자+하이닉스, 백만원)\n"
+            + "\n".join(rows_txt) + "\n"
         )
 
     # 전일 주도주
@@ -447,15 +470,15 @@ def run():
     print(f"  장전 시황 브리핑  {now.strftime('%Y-%m-%d %H:%M')} KST")
     print(f"{'='*50}")
 
-    mkt         = get_market_data()
-    futures     = get_kospi_futures()
+    mkt            = get_market_data()
+    futures        = get_kospi_futures()
     if futures:
         mkt["futures"] = futures
-    investor    = get_market_investor()
-    leaders     = get_prev_leaders()
-    disclosures = get_dart_disclosures()
-    ai_view     = get_ai_view(mkt, disclosures, investor)
-    msg         = build_message(mkt, disclosures, ai_view, now, investor, leaders)
+    investor_trend = get_investor_trend(7)
+    leaders        = get_prev_leaders()
+    disclosures    = get_dart_disclosures()
+    ai_view        = get_ai_view(mkt, disclosures, investor_trend)
+    msg            = build_message(mkt, disclosures, ai_view, now, investor_trend, leaders)
 
     tg_send(msg)
     print("  발송 완료")
