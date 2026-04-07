@@ -520,7 +520,7 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
             },
             json={
                 "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 200,
+                "max_tokens": 500,
                 "messages":   [{"role": "user", "content": prompt}],
             },
             timeout=15,

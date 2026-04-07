@@ -200,7 +200,7 @@ def get_dart_alerts(stock_names: list, seen_dart: set) -> list:
                         },
                         json={
                             "model": "claude-haiku-4-5-20251001",
-                            "max_tokens": 150,
+                            "max_tokens": 300,
                             "messages": [{"role": "user", "content": prompt}],
                         },
                         timeout=15,

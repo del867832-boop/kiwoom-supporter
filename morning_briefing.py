@@ -326,7 +326,7 @@ def get_ai_view(mkt: dict, disclosures: list, investor_trend: list = None) -> st
             },
             json={
                 "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 300,
+                "max_tokens": 600,
                 "messages":   [{"role": "user", "content": prompt}],
             },
             timeout=15,

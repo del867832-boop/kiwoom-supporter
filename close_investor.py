@@ -200,7 +200,7 @@ def get_ai_analysis(stock_data: list) -> str:
             },
             json={
                 "model":    "claude-haiku-4-5-20251001",
-                "max_tokens": 400,
+                "max_tokens": 800,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=20,
