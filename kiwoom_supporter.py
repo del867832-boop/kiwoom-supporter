@@ -342,10 +342,14 @@ def fmt_ta_line(ta: dict) -> str:
 # ── 외국인 / 기관 수급 ───────────────────────────────────────────
 
 def get_investor_data(ticker: str) -> dict:
-    """외국인·기관 당일 순매수량 조회 (실패 시 0 반환)"""
+    """
+    외국인·기관 수급 조회.
+    - 당일 확정 데이터 있으면 사용 (is_today=True)
+    - 없으면 전일 완성 데이터 사용 (is_today=False)
+    - 외인 연속 순매수/순매도 일수 (consec) 함께 반환
+    """
     try:
         token = get_token()
-        url   = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
         headers = {
             "content-type":  "application/json",
             "authorization": f"Bearer {token}",
@@ -353,22 +357,52 @@ def get_investor_data(ticker: str) -> dict:
             "appsecret":     KIS_APP_SECRET,
             "tr_id":         "FHKST01010900",
         }
-        params = {
-            "fid_cond_mrkt_div_code": "J",
-            "fid_input_iscd":         ticker,
-        }
-        res  = requests.get(url, headers=headers, params=params, timeout=10)
-        data = res.json()
-        rows = data.get("output")
+        res  = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
+            headers=headers,
+            params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker},
+            timeout=10,
+        )
+        rows = res.json().get("output", [])
         if not rows:
-            return {"frgn": 0, "orgn": 0}
-        row  = rows[0] if isinstance(rows, list) else rows
-        frgn = int(row.get("frgn_ntby_qty") or 0)
-        orgn = int(row.get("orgn_ntby_qty")  or 0)
-        return {"frgn": frgn, "orgn": orgn}
+            return {"frgn": 0, "orgn": 0, "is_today": False, "consec": 0}
+
+        # 당일 데이터 확인 (frgn_ntby_qty 기준)
+        is_today = False
+        frgn = orgn = 0
+        for i, row in enumerate(rows):
+            f = row.get("frgn_ntby_qty", "")
+            o = row.get("orgn_ntby_qty",  "")
+            if f:
+                frgn     = int(f)
+                orgn     = int(o or 0)
+                is_today = (i == 0)
+                break
+
+        # 외인 연속 매수/매도 일수 (거래대금 기준, 더 정확)
+        consec    = 0
+        direction = None
+        for row in rows:
+            f = row.get("frgn_ntby_tr_pbmn", "")
+            if not f:
+                continue
+            curr = 1 if int(f) > 0 else -1
+            if direction is None:
+                direction = curr
+            if curr == direction:
+                consec += 1
+            else:
+                break
+
+        return {
+            "frgn":     frgn,
+            "orgn":     orgn,
+            "is_today": is_today,
+            "consec":   consec * (direction or 1),
+        }
     except Exception as e:
         print(f"  investor 오류 ({ticker}): {e}")
-        return {"frgn": 0, "orgn": 0}
+        return {"frgn": 0, "orgn": 0, "is_today": False, "consec": 0}
 
 
 
@@ -420,8 +454,20 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
     orgn        = inv.get("orgn", 0)
     batch_label = BATCH_LABEL.get(batch, batch)
 
-    frgn_str = f"외국인 {'+' if frgn>=0 else ''}{frgn//10000}만주" if frgn != 0 else "외국인 데이터 없음"
-    orgn_str = f"기관 {'+' if orgn>=0 else ''}{orgn//10000}만주"   if orgn != 0 else "기관 데이터 없음"
+    is_today = inv.get("is_today", False)
+    consec   = inv.get("consec", 0)
+    label    = "당일" if is_today else "전일기준"
+
+    if frgn != 0 or orgn != 0:
+        frgn_str = f"외국인({label}) {'+' if frgn>=0 else ''}{frgn//10000}만주"
+        orgn_str = f"기관({label}) {'+' if orgn>=0 else ''}{orgn//10000}만주"
+    else:
+        frgn_str = "외국인 수급 집계 전"
+        orgn_str = "기관 수급 집계 전"
+
+    consec_str = ""
+    if abs(consec) >= 2:
+        consec_str = f"외인 {abs(consec)}일 연속 {'순매수' if consec > 0 else '순매도'}"
 
     ta_parts = []
     if ta:
@@ -448,11 +494,15 @@ def get_ai_comment(info: dict, inv: dict, batch: str, rank: int, ta: dict = None
         f"현재가: {price:,}원 ({'+' if rate>=0 else ''}{rate:.2f}%)\n"
         f"거래대금: {tr_val} / 거래량: {vol}\n"
         f"{frgn_str} / {orgn_str}\n"
+        f"{f'수급 트렌드: {consec_str}' if consec_str else ''}\n"
         f"기술지표: {ta_str if ta_str else '없음'}\n"
         f"시간대: {batch_label}\n\n"
         f"작성 규칙:\n"
         f"- 2~3문장, 간결하고 단정적인 전문가 어조\n"
         f"- 수치 근거 명시 (MA 위치·RSI·거래량배율·수급 중 해당 항목)\n"
+        f"- 수급이 '전일기준'이면 전일 수급 트렌드와 오늘 가격 흐름을 연결해 분석\n"
+        f"- '데이터 없음', '수급 확인 필요', '집계 전' 등의 표현 절대 금지\n"
+        f"- 수급이 불명확할 때는 가격·거래량·기술지표 위주로 분석\n"
         f"- 존댓말, 격식체 사용 (~입니다 / ~습니다)\n"
         f"- 질문·감탄사·이모지 금지\n"
         f"- 매번 다른 표현 사용\n\n"
@@ -563,14 +613,23 @@ def build_post(info: dict, inv: dict, batch: str, rank: int, now: datetime,
         if parts:
             macro_line = " / ".join(parts) + "\n"
 
-    frgn = inv.get("frgn", 0)
-    orgn = inv.get("orgn", 0)
-    frgn_str = f"{'▲' if frgn>=0 else '▼'} {fmt_vol(abs(frgn))}" if frgn != 0 else "─"
-    orgn_str = f"{'▲' if orgn>=0 else '▼'} {fmt_vol(abs(orgn))}" if orgn != 0 else "─"
+    frgn     = inv.get("frgn", 0)
+    orgn     = inv.get("orgn", 0)
+    is_today = inv.get("is_today", False)
+    consec   = inv.get("consec", 0)
+
+    inv_label = "" if is_today else "(전일)"
+    frgn_str  = f"{'▲' if frgn>=0 else '▼'} {fmt_vol(abs(frgn))}{inv_label}" if frgn != 0 else "─"
+    orgn_str  = f"{'▲' if orgn>=0 else '▼'} {fmt_vol(abs(orgn))}{inv_label}" if orgn != 0 else "─"
+
+    consec_line = ""
+    if abs(consec) >= 2:
+        icon_c = "🔥" if consec >= 3 else "📌"
+        consec_line = f"{icon_c} 외인 {abs(consec)}일 연속 {'순매수' if consec>0 else '순매도'}\n"
 
     inv_lines = ""
     if frgn != 0 or orgn != 0:
-        inv_lines = f"외국인    {frgn_str}\n기관      {orgn_str}\n"
+        inv_lines = f"외국인    {frgn_str}\n기관      {orgn_str}\n{consec_line}"
 
     # 52주 신고가 배지
     w52_high = info.get("w52_high", 0)
